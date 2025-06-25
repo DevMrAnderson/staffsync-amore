@@ -1,0 +1,5 @@
+{
+  "name": "Gestor de Turnos Amore",
+  "description": "Aplicacion web para la gestion de horarios, tareas y comunicacion interna del restaurante Cocina Amore. Implementa Firebase para backend y Tailwind CSS para la interfaz.",
+  "requestFramePermissions": []
+}
