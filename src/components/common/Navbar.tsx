@@ -13,25 +13,34 @@ const Navbar: React.FC<NavbarProps> = ({ title }) => {
 
   const getRoleDisplayName = (role?: UserRole) => {
     if (!role) return '';
-    switch (role) {
-      case UserRole.EMPLEADO: return 'Empleado';
-      case UserRole.GERENTE: return 'Gerente';
-      case UserRole.DUENO: return 'Dueno';
-      default: 
-        const _exhaustiveCheck: never = role;
-        return _exhaustiveCheck;
-    }
+    return role.charAt(0).toUpperCase() + role.slice(1);
   };
 
   return (
-    <nav className="bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 shadow-lg p-4 sticky top-0 z-[100]">
+    // ¡Volvemos a usar nuestra clase personalizada!
+    <nav className="bg-amore-red shadow-lg p-4 sticky top-0 z-[100]">
       <div className="container mx-auto flex flex-wrap justify-between items-center">
-        <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">{title || APP_NAME}</h1>
+
+        <div className="flex items-center">
+          {/* PASO FINAL DEL LOGO: Un div contenedor con fondo blanco y forma de círculo */}
+          <div className="h-10 w-10 bg-white rounded-full flex items-center justify-center p-1 mr-3 shadow-inner">
+            <img 
+              src="/PNG1.png" 
+              alt="Logo Cocina Amore" 
+              className="h-full w-full object-contain animate-heartbeat" 
+            />
+          </div>
+
+          <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+            {title || APP_NAME}
+          </h1>
+        </div>
+
         {userData && (
           <div className="flex items-center space-x-3 sm:space-x-4 mt-2 sm:mt-0">
             <div className="text-right">
               <p className="text-white text-sm font-semibold">{userData.name}</p>
-              <p className="text-indigo-200 text-xs">{getRoleDisplayName(userData.role)}</p>
+              <p className="text-red-100 text-xs">{getRoleDisplayName(userData.role)}</p>
             </div>
             <Button onClick={logout} variant="light" size="sm" icon={<i className="fas fa-sign-out-alt"></i>}>
               Salir
