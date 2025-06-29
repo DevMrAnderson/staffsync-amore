@@ -21,13 +21,13 @@ const Button: React.FC<ButtonProps> = ({
   const baseStyle = "font-semibold rounded-lg focus:outline-none focus:ring-2 focus:ring-opacity-50 transition-all duration-150 ease-in-out disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center shadow-sm hover:shadow-md";
 
   const variantStyles = {
-    primary: "bg-blue-600 hover:bg-blue-700 text-white focus:ring-blue-500",
-    secondary: "bg-gray-500 hover:bg-gray-600 text-white focus:ring-gray-400",
+    primary: "bg-[#B91C1C] hover:bg-red-800 text-white focus:ring-amore-red",
+    secondary: "bg-amore-charcoal hover:bg-gray-700 text-white focus:ring-amore-charcoal",
     danger: "bg-red-600 hover:bg-red-700 text-white focus:ring-red-500",
     success: "bg-green-600 hover:bg-green-700 text-white focus:ring-green-500",
     warning: "bg-yellow-500 hover:bg-yellow-600 text-black focus:ring-yellow-400",
     info: "bg-sky-500 hover:bg-sky-600 text-white focus:ring-sky-400",
-    light: "bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 focus:ring-gray-300",
+    light: "bg-white text-amore-charcoal hover:bg-gray-100 border border-gray-200 focus:ring-amore-gray",
   };
 
   const sizeStyles = {
@@ -51,10 +51,10 @@ const Button: React.FC<ButtonProps> = ({
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
         </svg>
       ) : (
-        <>
-          {icon && <span className={children ? "mr-2" : ""}>{icon}</span>}
+        <div className="pointer-events-none flex items-center justify-center">
+          {icon && <span className="mr-2">{icon}</span>}
           {children}
-        </>
+        </div>
       )}
     </button>
   );

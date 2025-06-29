@@ -18,7 +18,7 @@ const Navbar: React.FC<NavbarProps> = ({ title }) => {
 
   return (
     // ¡Volvemos a usar nuestra clase personalizada!
-    <nav className="bg-amore-red shadow-lg p-4 sticky top-0 z-[100]">
+    <nav className="bg-amore-red shadow-lg p-4 sticky top-0 z-50">
       <div className="container mx-auto flex flex-wrap justify-between items-center">
 
         <div className="flex items-center">

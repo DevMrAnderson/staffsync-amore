@@ -88,19 +88,21 @@ const DueñoDashboard: React.FC = () => {
 
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <Navbar title="Panel de Dueño" />
-      <div className="container mx-auto p-4 md:p-6">
-         <aside className="mb-6">
-          <div className="bg-white p-3 md:p-4 rounded-xl shadow-lg flex flex-col sm:flex-row flex-wrap gap-2 justify-center md:justify-start">
-            <Button 
-              variant={activeView === 'fullScheduleView' ? 'primary' : 'secondary'}
-              onClick={() => setActiveView('fullScheduleView')}
-              icon={<i className="fas fa-calendar-check mr-2"></i>}
-              className="flex-grow sm:flex-grow-0"
-            >
-              Horarios (Todos)
-            </Button>
+    <div className="h-screen bg-gray-100 flex flex-col">
+      <Navbar title="Panel de Administración (Dueño)" />
+      <div className="container mx-auto p-4 md:p-6 flex-grow flex flex-col overflow-hidden">
+         <aside className="mb-6 flex-shrink-0">
+          <div className="bg-white p-3 md:p-4 rounded-xl shadow-lg flex flex-col sm:flex-row flex-wrap gap-2 justify-center">
+            {DUENO_VIEWS_CONFIG.map(view => (
+              <Button 
+                key={view.id}
+                variant={activeView === view.id ? 'primary' : 'light'}
+                onClick={() => setActiveView(view.id)}
+                icon={<i className={`${view.icon} mr-2`}></i>}
+                className="flex-grow sm:flex-grow-0"
+              >
+                {view.label}
+              </Button>
              <Button 
               variant={activeView === 'userManagement' ? 'primary' : 'secondary'}
               onClick={() => setActiveView('userManagement')}
@@ -128,7 +130,7 @@ const DueñoDashboard: React.FC = () => {
           </div>
         </aside>
 
-        <main className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
+        <main className="bg-white p-4 sm:p-6 rounded-xl shadow-lg flex-grow overflow-y-auto">
             {renderView()}
         </main>
 

@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { useAuth } from './contexts/AuthContext';
 import Login from './components/auth/Login';
@@ -8,9 +7,21 @@ import DuenoDashboard from './components/dueno/DuenoDashboard';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import NotificationContainer from './components/common/NotificationContainer';
 import { UserRole } from './types';
+import Button from './components/common/Button'; // Importamos nuestro botón personalizado
 
 const App: React.FC = () => {
-  const { user, loading, userData, logout } = useAuth(); // Destructure logout here
+  const { user, loading, userData, logout } = useAuth();
+
+  // --- INICIO DE LA LÓGICA CORREGIDA ---
+  // Creamos una lista con todos los roles que deben ver el panel de empleado.
+  const employeeLevelRoles: UserRole[] = [
+    UserRole.COCINERO,
+    UserRole.AUXILIAR_COCINA,
+    UserRole.LAVALOZA,
+    UserRole.BARTENDER,
+    UserRole.MESERO,
+  ];
+  // --- FIN DE LA LÓGICA CORREGIDA ---
 
   if (loading) {
     return (
@@ -27,20 +38,25 @@ const App: React.FC = () => {
         <Login />
       ) : (
         <>
-          {userData?.role === UserRole.EMPLEADO && <EmpleadoDashboard />}
+          {/* AHORA COMPROBAMOS SI EL ROL ESTÁ EN NUESTRA LISTA DE ROLES DE EMPLEADO */}
+          {userData?.role && employeeLevelRoles.includes(userData.role) && <EmpleadoDashboard />}
+
           {userData?.role === UserRole.GERENTE && <GerenteDashboard />}
           {userData?.role === UserRole.DUENO && <DuenoDashboard />}
-          {(!userData || !userData.role) && user && ( // Check for user but no userData/role
-             <div className="flex flex-col items-center justify-center flex-grow p-4">
-                <h1 className="text-2xl font-bold text-red-600 mb-4">Error de Configuracion de Cuenta</h1>
-                <p className="text-center">No se ha podido determinar tu rol o tu perfil no esta completo. Por favor, contacta al administrador.</p>
-                <button 
-                  onClick={logout} // Use logout from useAuth hook
-                  className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-                >
-                  Cerrar Sesion
-                </button>
-             </div>
+          
+          {(!userData || !userData.role) && user && (
+            <div className="flex flex-col items-center justify-center flex-grow p-4">
+              <h1 className="text-2xl font-bold text-amore-red mb-4">Error de Configuración de Cuenta</h1>
+              <p className="text-center">No se ha podido determinar tu rol o tu perfil no está completo. Por favor, contacta al administrador.</p>
+              {/* Usamos nuestro botón personalizado para consistencia de diseño */}
+              <Button 
+                onClick={logout}
+                variant="primary"
+                className="mt-4"
+              >
+                Cerrar Sesión
+              </Button>
+            </div>
           )}
         </>
       )}

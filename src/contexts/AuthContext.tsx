@@ -20,58 +20,56 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [userData, setUserData] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // --- NUEVA ESTRUCTURA ---
+
+  // Efecto #1: Solo se encarga de escuchar el estado de autenticación (login/logout).
   useEffect(() => {
-    let unsubscribeFirestore: Unsubscribe | undefined;
-
-    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
-      if (unsubscribeFirestore) {
-        unsubscribeFirestore(); // Clean up previous Firestore listener
-        unsubscribeFirestore = undefined;
-      }
-
-      if (firebaseUser) {
-        setLoading(true); // Ensure loading is true while fetching/subscribing
-        const userDocRef = doc(db, FirebaseCollections.USERS, firebaseUser.uid);
-        
-        unsubscribeFirestore = onSnapshot(userDocRef, (docSnap) => {
-          if (docSnap.exists()) {
-            setUserData({ id: docSnap.id, ...docSnap.data() } as AppUser);
-          } else {
-            console.warn("No se encontro el documento de usuario en Firestore para UID:", firebaseUser.uid);
-            setUserData(null); 
-            // This case might indicate an issue, e.g., user exists in Auth but not Firestore
-            // Could sign out the user or prompt for profile creation depending on app logic
-          }
-          setLoading(false);
-        }, (error) => {
-          console.error("Error al obtener datos de usuario de Firestore:", error);
-          setUserData(null);
-          setLoading(false);
-        });
-
-      } else {
-        setUserData(null);
-        setLoading(false);
-      }
+      setLoading(false); // Dejamos de cargar una vez que sabemos si hay usuario o no.
     });
 
-    return () => {
-      unsubscribeAuth();
-      if (unsubscribeFirestore) {
-        unsubscribeFirestore();
+    // Se limpia la suscripción de auth cuando el componente se desmonta.
+    return () => unsubscribeAuth();
+  }, []); // Se ejecuta solo una vez.
+
+  // Efecto #2: Reacciona cuando el 'user' cambia.
+  useEffect(() => {
+    // Si no hay usuario (logout), limpiamos los datos y no hacemos nada más.
+    if (!user) {
+      setUserData(null);
+      return;
+    }
+
+    // Si SÍ hay un usuario, creamos la suscripción a sus datos en Firestore.
+    const userDocRef = doc(db, FirebaseCollections.USERS, user.uid);
+    const unsubscribeFirestore = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setUserData({ id: docSnap.id, ...docSnap.data() } as AppUser);
+      } else {
+        console.warn("No se encontro el documento de usuario en Firestore para UID:", user.uid);
+        setUserData(null);
       }
-    };
-  }, []);
+    }, (error) => {
+      console.error("Error al obtener datos de usuario de Firestore:", error);
+      setUserData(null);
+    });
+
+    // La magia de React: esta función de limpieza se ejecuta AUTOMÁTICAMENTE
+    // cuando el 'user' cambia (es decir, cuando se cierra la sesión).
+    // Esto asegura que nos damos de baja del listener ANTES de que el usuario sea nulo.
+    return () => unsubscribeFirestore();
+
+  }, [user]); // La dependencia [user] es la clave.
+
+  // --- FIN DE LA NUEVA ESTRUCTURA ---
 
   const logout = async () => {
     try {
       await auth.signOut();
-      setUser(null); // Explicitly clear user
-      setUserData(null); // Explicitly clear userData
+      // No es necesario limpiar los estados aquí, el useEffect de arriba lo hará automáticamente.
     } catch (error) {
       console.error("Error durante el cierre de sesion:", error);
-      // Optionally notify user of logout error
     }
   };
 

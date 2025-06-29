@@ -1,5 +1,5 @@
-
 import React, { ReactNode, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 interface ModalProps {
   isOpen: boolean;
@@ -28,7 +28,7 @@ const Modal: React.FC<ModalProps> = ({
     };
     if (isOpen) {
       document.addEventListener('keydown', handleEsc);
-      document.body.style.overflow = 'hidden'; // Prevent background scrolling
+      document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = 'auto';
     }
@@ -50,17 +50,16 @@ const Modal: React.FC<ModalProps> = ({
     full: 'max-w-full h-full rounded-none',
   };
 
-  return (
+  return createPortal(
     <div 
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-black bg-opacity-60 p-4 transition-opacity duration-300 ease-in-out animate-fadeIn"
-      onClick={onClose} // Close on backdrop click
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-title"
     >
       <div 
         className={`bg-white rounded-lg shadow-xl w-full ${sizeClasses[size]} flex flex-col max-h-[90vh] transform transition-all duration-300 ease-in-out animate-scaleUp`}
-        onClick={e => e.stopPropagation()} // Prevent closing when clicking inside modal content
+        onClick={e => e.stopPropagation()}
       >
         <div className="flex justify-between items-center p-4 md:p-5 border-b rounded-t">
           <h3 id="modal-title" className="text-xl font-semibold text-gray-900">
@@ -88,20 +87,8 @@ const Modal: React.FC<ModalProps> = ({
           </div>
         )}
       </div>
-      {/* 
-        Keyframes for animations are expected to be defined globally, e.g., in Tailwind config or a global CSS file.
-        @keyframes fadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @keyframes scaleUp {
-          from { transform: scale(0.95); opacity: 0; }
-          to { transform: scale(1); opacity: 1; }
-        }
-        .animate-fadeIn { animation: fadeIn 0.3s ease-out forwards; }
-        .animate-scaleUp { animation: scaleUp 0.3s ease-out forwards; }
-      */}
-    </div>
+    </div>, // <--- LA COMA CORREGIDA ESTÁ AQUÍ
+    document.body
   );
 };
 

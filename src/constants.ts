@@ -7,6 +7,8 @@ export const FirebaseCollections = {
   CHANGE_REQUESTS: 'changeRequests',
   JUSTIFICATIONS: 'justifications',
   UNIVERSAL_HISTORY: 'universalHistory',
+  SHIFT_TEMPLATES: 'shiftTemplates',
+  CHECKLIST_TEMPLATES: 'checklistTemplates',
 };
 
 // Example Shift Type Names (these would ideally be created via an admin interface or seeded)

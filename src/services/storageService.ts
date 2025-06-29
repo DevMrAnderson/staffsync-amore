@@ -23,11 +23,21 @@ export const uploadFile = async (file: File, path: string): Promise<string> => {
   }
 };
 
-export const uploadJustificationFile = async (userId: string, file: File): Promise<string> => {
+// VERSIÓN NUEVA (CORREGIDA Y MEJORADA)
+export const uploadJustificationFile = async (file: File, userId: string): Promise<{downloadURL: string, fileName: string}> => {
+  // Añadimos una comprobación de seguridad primero.
+  if (!file) {
+    throw new Error("No se ha proporcionado ningún archivo para subir.");
+  }
+
   const timestamp = Date.now();
-  // Sanitize file name (optional, but good practice)
   const sanitizedFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const fileName = `${timestamp}_${sanitizedFileName}`;
-  const path = `justifications/${userId}/${fileName}`;
-  return uploadFile(file, path);
+  const finalFileName = `${timestamp}_${sanitizedFileName}`;
+  const path = `justifications/${userId}/${finalFileName}`;
+
+  // Llamamos a la función original para subir el archivo.
+  const downloadURL = await uploadFile(file, path);
+
+  // Devolvemos un objeto con ambos datos.
+  return { downloadURL, fileName: finalFileName };
 };

@@ -4,10 +4,12 @@ import {
   getDocs, 
   doc, 
   getDoc, 
+  setDoc, 
   updateDoc, 
   deleteDoc, 
   query, 
   where, 
+  OrderByDirection, 
   Timestamp,
   orderBy,
   writeBatch,
@@ -19,7 +21,7 @@ import {
   limit,
   startAfter,
   QueryDocumentSnapshot,
-  getCountFromServer
+  getCountFromServer,
 } from 'firebase/firestore';
 import { db } from './firebase'; // Ensure db is correctly initialized and exported
 import { FirebaseCollections } from '../constants';
@@ -34,7 +36,112 @@ import {
   ChangeRequestStatus,
   JustificationStatus
 } from '../types';
+import { startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns'; // Asegúrate de tener esto
 
+import { Notification } from '../types'; // Asegúrate de que Notification esté en tus tipos
+
+/**
+ * Escucha en tiempo real las notificaciones NO LEÍDAS de un usuario específico.
+ * @param userId El ID del usuario del que queremos las notificaciones.
+ * @param callback La función a ejecutar con las notificaciones encontradas.
+ * @returns Una función para detener la escucha.
+ */
+export const onUnreadNotificationsSnapshot = (userId: string, callback: (notifications: Notification[]) => void): Unsubscribe => {
+  const q = query(
+    collection(db, 'notifications'),
+    where('userId', '==', userId),
+    where('isRead', '==', false),
+    orderBy('createdAt', 'desc')
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    const notifications = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    } as Notification));
+    callback(notifications);
+  });
+};
+
+export const getAllUsers = (): Promise<User[]> => {
+  // Usamos tu función genérica para traer a todos los usuarios
+  return getAllDocuments<User>(FirebaseCollections.USERS, query(collection(db, FirebaseCollections.USERS), orderBy('name')));
+};
+/**
+ * Marca una notificación específica como leída.
+ * @param notificationId El ID del documento de la notificación a actualizar.
+ */
+export const markNotificationAsRead = (notificationId: string): Promise<void> => {
+  return updateDocument('notifications', notificationId, { isRead: true });
+};
+
+export const getShiftsForMonth = async (date: Date): Promise<Shift[]> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  const monthStart = startOfMonth(date);
+  const monthEnd = endOfMonth(date);
+
+  const q = query(
+    collection(db, FirebaseCollections.SHIFTS),
+    where('start', '>=', Timestamp.fromDate(monthStart)),
+    where('start', '<=', Timestamp.fromDate(monthEnd))
+  );
+
+  return getAllDocuments<Shift>(FirebaseCollections.SHIFTS, q);
+};
+
+// Función para obtener una plantilla de checklist específica por su ID
+export const getChecklistTemplate = (id: string): Promise<ChecklistTemplate | null> => {
+  return getDocument<ChecklistTemplate>(FirebaseCollections.CHECKLIST_TEMPLATES, id);
+};
+
+// Función para encontrar el turno activo de un usuario en el momento actual
+export const getCurrentActiveShiftForUser = async (userId: string): Promise<Shift | null> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  const now = Timestamp.now();
+
+  // Consulta CORREGIDA: Busca el último turno que ya ha comenzado.
+  const q = query(
+    collection(db, FirebaseCollections.SHIFTS),
+    where('userId', '==', userId),
+    where('start', '<=', now),
+    orderBy('start', 'desc'), // Ordenamos para obtener el más reciente primero
+    limit(1)
+  );
+
+  const querySnapshot = await getDocs(q);
+
+  if (!querySnapshot.empty) {
+    const shiftDoc = querySnapshot.docs[0];
+    const shift = { id: shiftDoc.id, ...shiftDoc.data() } as Shift;
+
+    // Ahora, verificamos en el código si el turno todavía no ha terminado.
+    if (shift.end.toDate() > now.toDate()) {
+      return shift; // ¡Este es el turno activo!
+    }
+  }
+
+  return null; // No se encontró ningún turno activo.
+};
+
+export const getShiftsForDay = async (day: Date): Promise<Shift[]> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  // Creamos el rango de búsqueda: desde el inicio del día hasta el final del día
+  const start = Timestamp.fromDate(startOfDay(day));
+  const end = Timestamp.fromDate(endOfDay(day));
+
+  // Creamos la consulta a Firestore
+  const q = query(
+    collection(db, FirebaseCollections.SHIFTS),
+    where('start', '>=', start),
+    where('start', '<=', end)
+  );
+
+  // Usamos nuestra función genérica para obtener los documentos
+  return getAllDocuments<Shift>(FirebaseCollections.SHIFTS, q);
+};
 // Helper to convert Firestore Timestamps to Dates in nested objects (if needed for some libraries)
 // For most internal logic, keeping Timestamps is fine.
 const convertTimestamps = (data: any): any => {
@@ -129,7 +236,8 @@ export const updateUser = (id: string, data: Partial<User>): Promise<void> => up
 export const createUserDocument = (uid: string, data: Omit<User, 'id' | 'createdAt'>): Promise<void> => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
   const userDocRef = doc(db, FirebaseCollections.USERS, uid);
-  return updateDoc(userDocRef, { ...data, createdAt: serverTimestamp() }, { merge: true }); // Use updateDoc with merge for safety or setDoc
+  // Usamos setDoc para CREAR el documento.
+  return setDoc(userDocRef, { ...data, createdAt: serverTimestamp() });
 };
 
 
@@ -139,14 +247,43 @@ export const getAllShiftTypes = (): Promise<ShiftType[]> => getAllDocuments<Shif
 export const getShiftType = (id: string): Promise<ShiftType | null> => getDocument<ShiftType>(FirebaseCollections.SHIFT_TYPES, id);
 
 // --- Specific Shift functions ---
-// For publishing a batch of shifts (e.g., a week's schedule)
-export const publishShiftsBatch = async (shifts: Omit<Shift, 'id' | 'createdAt'>[]): Promise<void> => {
+// Reemplaza la vieja función publishShiftsBatch con esta
+export const replaceShiftsForTemplate = async (
+  day: Date,
+  templateId: string,
+  shiftsToCreate: Omit<Shift, 'id' | 'createdAt'>[]
+) => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  const startOfDayTimestamp = Timestamp.fromDate(startOfDay(day));
+  const endOfDayTimestamp = Timestamp.fromDate(endOfDay(day));
+
+  // 1. Encontrar todos los turnos existentes para este día y esta plantilla
+  const shiftsCollectionRef = collection(db, FirebaseCollections.SHIFTS);
+  const q = query(
+    shiftsCollectionRef,
+    where('start', '>=', startOfDayTimestamp),
+    where('start', '<=', endOfDayTimestamp),
+    where('shiftTypeId', '==', templateId)
+  );
+
+  const existingShiftsSnapshot = await getDocs(q);
+
+  // 2. Crear un "batch" para realizar múltiples operaciones a la vez
   const batch = writeBatch(db);
-  shifts.forEach(shiftData => {
-    const newShiftRef = doc(collection(db, FirebaseCollections.SHIFTS)); // Auto-generate ID
+
+  // 3. Añadir una operación de borrado por cada turno existente
+  existingShiftsSnapshot.forEach(document => {
+    batch.delete(document.ref);
+  });
+
+  // 4. Añadir una operación de creación por cada nuevo turno que queremos guardar
+  shiftsToCreate.forEach(shiftData => {
+    const newShiftRef = doc(shiftsCollectionRef); // Firestore genera un nuevo ID
     batch.set(newShiftRef, { ...shiftData, createdAt: serverTimestamp() });
   });
+
+  // 5. Ejecutar todas las operaciones (borrar y crear) de forma atómica
   await batch.commit();
 };
 export const getShift = (id: string): Promise<Shift | null> => getDocument<Shift>(FirebaseCollections.SHIFTS, id);
@@ -315,4 +452,51 @@ export const getUniversalHistoryPage = async (
   const nextLastVisibleDoc = querySnapshot.docs[querySnapshot.docs.length - 1];
   
   return { entries, nextLastVisibleDoc, totalCount };
+};
+
+import { ShiftTemplate } from '../types'; // Asegúrate de importar el nuevo tipo
+import { fsync } from 'fs';
+
+export const getShiftTemplates = (): Promise<ShiftTemplate[]> => {
+  // Creamos una consulta que pide las plantillas y las ordena por hora de inicio
+  const q = query(collection(db, FirebaseCollections.SHIFT_TEMPLATES), orderBy('startTime'));
+  // Usamos nuestra función genérica que ya existe para traer todos los documentos
+  return getAllDocuments<ShiftTemplate>(FirebaseCollections.SHIFT_TEMPLATES, q);
+};
+
+// --- Specific ChecklistTemplate functions ---
+
+export const getChecklistTemplates = (): Promise<ChecklistTemplate[]> => {
+  const q = query(collection(db, FirebaseCollections.CHECKLIST_TEMPLATES), orderBy('name'));
+  return getAllDocuments<ChecklistTemplate>(FirebaseCollections.CHECKLIST_TEMPLATES, q);
+};
+
+export const addChecklistTemplate = (data: Omit<ChecklistTemplate, 'id' | 'createdAt'>): Promise<string> => {
+  return addDocument<ChecklistTemplate>(FirebaseCollections.CHECKLIST_TEMPLATES, data);
+};
+
+export const updateChecklistTemplate = (id: string, data: Partial<ChecklistTemplate>): Promise<void> => {
+  return updateDocument<ChecklistTemplate>(FirebaseCollections.CHECKLIST_TEMPLATES, id, data);
+};
+
+export const deleteChecklistTemplate = (id: string): Promise<void> => {
+  return deleteDocument(FirebaseCollections.CHECKLIST_TEMPLATES, id);
+};
+
+/**
+ * Obtiene todos los justificantes que ya han sido resueltos (aprobados o rechazados).
+ * @returns Una promesa con la lista de justificantes históricos.
+ */
+export const getResolvedJustifications = (): Promise<Justification[]> => {
+  const justificationsCollection = collection(db, FirebaseCollections.JUSTIFICATIONS);
+  
+  const q = query(
+    justificationsCollection, 
+    where('status', 'in', ['approved', 'rejected']),
+    // --- CORRECCIÓN FINAL ---
+    // Ordenamos por 'createdAt', el campo que sí existe en tus documentos.
+    orderBy('createdAt', 'desc')
+  );
+
+  return getAllDocuments<Justification>(FirebaseCollections.JUSTIFICATIONS, q);
 };

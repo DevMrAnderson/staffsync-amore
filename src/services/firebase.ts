@@ -5,7 +5,7 @@ import { getStorage, FirebaseStorage } from 'firebase/storage';
 
 // La configuración que pegaste desde la consola de Firebase.
 // Asegúrate de que estos sean tus datos reales.
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyCe0OwKxuiZvVev8997VfTHCiiC43jxbrc",
   authDomain: "staffsync-amore.firebaseapp.com",
   projectId: "staffsync-amore",

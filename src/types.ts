@@ -1,9 +1,13 @@
 import type { Timestamp } from 'firebase/firestore';
 
 export enum UserRole {
-  EMPLEADO = 'empleado',
+  COCINERO = 'cocinero',
+  AUXILIAR_COCINA = 'auxiliar_cocina',
+  LAVALOZA = 'lavaloza',
+  BARTENDER = 'bartender',
+  MESERO = 'mesero',
   GERENTE = 'gerente',
-  DUENO = 'dueno', // Using 'dueno' instead of 'dueño' for compatibility
+  DUENO = 'dueno',
 }
 
 export interface User {
@@ -18,6 +22,18 @@ export interface ChecklistItem {
   task: string;
   done: boolean; // This will be ephemeral UI state, not stored per shift instance
 }
+
+export type Justification = {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  fileUrl: string;
+  fileName: string;
+  status: 'pending' | 'approved' | 'rejected';
+  managerNotes?: string; // Las notas del gerente son opcionales
+  submittedAt: Date;
+  createdAt?: Date; // La fecha de resolución es opcional
+};
 
 export interface ProcedureItem {
   task: string;
@@ -34,8 +50,12 @@ export interface ShiftType {
 
 export enum ShiftStatus {
   CONFIRMADO = 'confirmado',
-  CAMBIO_SOLICITADO = 'cambio_solicitado', // Employee requested a change
-  CAMBIO_EN_PROCESO = 'cambio_en_proceso', // Manager proposed to another employee
+  CAMBIO_SOLICITADO = 'cambio_solicitado',
+  CAMBIO_EN_PROCESO = 'cambio_en_proceso',
+  COMPLETADO = 'completado',
+  AUSENCIA_JUSTIFICADA = 'ausencia_justificada',
+  FALTA_INJUSTIFICADA = 'falta_injustificada',
+  PENDIENTE = 'pendiente', // <-- NUEVO ESTADO
 }
 
 export interface Shift {
@@ -117,3 +137,32 @@ export interface NotificationMessage {
   type: 'success' | 'error' | 'info' | 'warning';
   timestamp: number; // For sorting or auto-dismissal
 }
+
+export interface ShiftTemplate {
+  id: string;
+  name: string;
+  startTime: string; // e.g., "07:30"
+  endTime: string;   // e.g., "16:00"
+  positionsRequired: {
+    [role: string]: number; // e.g., { cocinero: 1, mesero: 2 }
+  };
+}
+
+export interface ChecklistTemplate {
+  id: string;
+  name: string;
+  description: string;
+  tasks: string[];
+  createdAt?: Timestamp; // El '?' significa que es opcional
+}
+
+export type Notification = {
+  id: string;
+  userId: string;
+  title: string;
+  message: string;
+  isRead: boolean;
+  createdAt: any; // Se guardará como Timestamp, pero puede leerse como objeto
+  type: string;
+  relatedDocId?: string;
+};
