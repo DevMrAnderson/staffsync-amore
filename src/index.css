@@ -3,6 +3,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/* --- INICIO DE LA SOLUCIÓN DEFINITIVA: VARIABLES DE CSS --- */
+@layer base {
+  :root {
+    /* --- COLORES PARA MODO CLARO (LIGHT MODE) --- */
+    --color-background: #F3F4F6;      /* gris-100 */
+    --color-text-primary: #1F2937;   /* gris-800 / amore-charcoal */
+    --color-text-secondary: #6B7280; /* gris-500 / amore-gray */
+    --color-card-background: #FFFFFF;
+    --color-brand-primary: #B91C1C;   /* amore-red */
+    --color-brand-primary-soft: #FEF2F2; /* amore-red-soft */
+  }
+
+  .dark {
+    /* --- COLORES PARA MODO OSCURO (DARK MODE) --- */
+    --color-background: #111827;      /* gris-900 */
+    --color-text-primary: #E5E7EB;   /* gris-200 */
+    --color-text-secondary: #9CA3AF; /* gris-400 */
+    --color-card-background: #1F2937; /* gris-800 */
+    --color-brand-primary: #B91C1C;   /* amore-red (se mantiene igual) */
+    --color-brand-primary-soft: #371B1B; /* Un rojo muy oscuro para fondos suaves */
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-text-primary);
+    transition-property: color, background-color;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 300ms;
+  }
+}
+/* --- FIN DE LA SOLUCIÓN --- */
+
 /* --- INICIO DE NUESTROS ESTILOS Y ANIMACIONES PERSONALIZADAS --- */
 
 /* 1. Keyframes: Las 'recetas' de nuestras animaciones */

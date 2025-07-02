@@ -29,6 +29,7 @@ import {
   User, 
   ShiftType, 
   Shift, 
+  ShiftReport,
   ChangeRequest, 
   Justification, 
   UniversalHistoryEntry,
@@ -36,7 +37,7 @@ import {
   ChangeRequestStatus,
   JustificationStatus
 } from '../types';
-import { startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns'; // Asegúrate de tener esto
+import { startOfDay, endOfDay, startOfMonth, endOfMonth, startOfWeek, addDays, endOfWeek } from 'date-fns'; // Asegúrate de tener esto
 
 import { Notification } from '../types'; // Asegúrate de que Notification esté en tus tipos
 
@@ -99,30 +100,75 @@ export const getChecklistTemplate = (id: string): Promise<ChecklistTemplate | nu
 export const getCurrentActiveShiftForUser = async (userId: string): Promise<Shift | null> => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
 
-  const now = Timestamp.now();
+  const now = new Date();
+  const nowTimestamp = Timestamp.now();
+  
+  // --- INICIO DE NUESTROS SENSORES ---
+  console.log(`--- DEBUG: Buscando turno activo para el usuario: ${userId} ---`);
+  console.log(`Hora actual (local de tu navegador): ${now.toLocaleString('es-MX')}`);
+  // --- FIN DE NUESTROS SENSORES ---
 
-  // Consulta CORREGIDA: Busca el último turno que ya ha comenzado.
   const q = query(
     collection(db, FirebaseCollections.SHIFTS),
     where('userId', '==', userId),
-    where('start', '<=', now),
-    orderBy('start', 'desc'), // Ordenamos para obtener el más reciente primero
+    where('start', '<=', nowTimestamp),
+    orderBy('start', 'desc'),
     limit(1)
   );
 
   const querySnapshot = await getDocs(q);
+  
+  console.log(`DEBUG: La consulta encontró ${querySnapshot.size} turno(s) que ya empezaron.`);
 
   if (!querySnapshot.empty) {
     const shiftDoc = querySnapshot.docs[0];
     const shift = { id: shiftDoc.id, ...shiftDoc.data() } as Shift;
+    
+    console.log("DEBUG: Turno encontrado:", {
+      nombre: shift.userName,
+      hora_inicio_guardada: shift.start.toDate().toLocaleString('es-MX'),
+      hora_fin_guardada: shift.end.toDate().toLocaleString('es-MX')
+    });
 
-    // Ahora, verificamos en el código si el turno todavía no ha terminado.
-    if (shift.end.toDate() > now.toDate()) {
-      return shift; // ¡Este es el turno activo!
+    if (shift.end.toDate() > now) {
+      console.log("DEBUG: VERIFICACIÓN: La hora de fin es posterior a la actual. ¡Este es un turno activo!");
+      return shift;
+    } else {
+      console.log("DEBUG: VERIFICACIÓN: La hora de fin ya pasó. Este turno ya terminó.");
+      return null;
     }
   }
 
-  return null; // No se encontró ningún turno activo.
+  console.log("DEBUG: VERIFICACIÓN: No se encontró ningún turno que ya haya comenzado para este usuario.");
+  return null;
+};
+
+// Añade esta nueva función a tu firestoreService.ts
+
+// Busca el reporte del turno que terminó justo antes de la hora de inicio dada
+export const getPreviousShiftReport = async (currentShiftStartTime: Timestamp): Promise<ShiftReport | null> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  // Buscamos el turno más reciente que haya terminado ANTES de que el actual comience
+  const q = query(
+    collection(db, FirebaseCollections.SHIFTS),
+    where('end', '<', currentShiftStartTime),
+    orderBy('end', 'desc'),
+    limit(1)
+  );
+
+  const shiftsSnapshot = await getDocs(q);
+
+  if (shiftsSnapshot.empty) {
+    console.log("No se encontró un turno previo.");
+    return null;
+  }
+
+  const previousShift = shiftsSnapshot.docs[0];
+  
+  // Una vez que tenemos el turno previo, buscamos su reporte de checklist
+  console.log(`Turno previo encontrado: ${previousShift.id}. Buscando su reporte...`);
+  return getShiftReport(previousShift.id);
 };
 
 export const getShiftsForDay = async (day: Date): Promise<Shift[]> => {
@@ -142,6 +188,29 @@ export const getShiftsForDay = async (day: Date): Promise<Shift[]> => {
   // Usamos nuestra función genérica para obtener los documentos
   return getAllDocuments<Shift>(FirebaseCollections.SHIFTS, q);
 };
+
+export const getShiftsForWeek = async (startDate: Date, endDate: Date): Promise<Shift[]> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  const startTimestamp = Timestamp.fromDate(startOfWeek(startDate, { weekStartsOn: 1 }));
+  const endTimestamp = Timestamp.fromDate(endOfWeek(endDate, { weekStartsOn: 1 }));
+
+  // --- SENSORES DE DEPURACIÓN ---
+  console.log("--- DEBUG [firestoreService]: Buscando turnos entre... ---");
+  console.log("Desde:", startTimestamp.toDate());
+  console.log("Hasta:", endTimestamp.toDate());
+  // --- FIN DE SENSORES ---
+
+  const q = query(
+    collection(db, FirebaseCollections.SHIFTS),
+    where('start', '>=', startTimestamp),
+    where('start', '<=', endTimestamp)
+  );
+  
+  return getAllDocuments<Shift>(FirebaseCollections.SHIFTS, q);
+};
+
+
 // Helper to convert Firestore Timestamps to Dates in nested objects (if needed for some libraries)
 // For most internal logic, keeping Timestamps is fine.
 const convertTimestamps = (data: any): any => {
@@ -404,7 +473,9 @@ export const onPendingManagerChangeRequestsSnapshot = (callback: (requests: Chan
 
 // --- Specific Justification functions ---
 export const addJustification = (data: Omit<Justification, 'id' | 'uploadedAt' | 'createdAt'>): Promise<string> => addDocument<Justification>(FirebaseCollections.JUSTIFICATIONS, data);
-export const updateJustification = (id: string, data: Partial<Justification>): Promise<void> => updateDocument<Justification>(FirebaseCollections.JUSTIFICATIONS, id, data);
+export const updateJustification = (id: string, data: Partial<Justification>): Promise<void> => {
+  return updateDocument<Justification>(FirebaseCollections.JUSTIFICATIONS, id, data);
+};
 
 // Listener for justifications pending manager review
 export const onPendingJustificationsSnapshot = (callback: (justifications: Justification[]) => void): Unsubscribe => {
@@ -414,15 +485,10 @@ export const onPendingJustificationsSnapshot = (callback: (justifications: Justi
     where('status', '==', JustificationStatus.PENDIENTE),
     orderBy('uploadedAt', 'desc')
   );
-  return onSnapshot(q, async (snapshot) => {
+  return onSnapshot(q, (snapshot) => {
     const justifications = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Justification));
-    // Populate userName
-    const populatedJustifications = await Promise.all(justifications.map(async j => {
-        const user = j.userId ? await getUser(j.userId) : null;
-        return { ...j, userName: user?.name || 'Desconocido' };
-    }));
-    callback(populatedJustifications);
-  }, (error) => console.error("Error en onPendingJustificationsSnapshot:", error));
+    callback(justifications);
+  });
 };
 
 // --- Universal History ---
@@ -430,27 +496,49 @@ export const addHistoryEntry = (data: Omit<UniversalHistoryEntry, 'id' | 'timest
 
 // Paginated history fetching
 export const getUniversalHistoryPage = async (
-    itemsPerPage: number, 
-    lastVisibleDoc?: QueryDocumentSnapshot<DocumentData>
+  itemsPerPage: number, 
+  lastVisibleDoc?: QueryDocumentSnapshot<DocumentData>,
+  // Ahora el objeto de filtros es más potente
+  filters?: { 
+    actorName?: string;
+    startDate?: string;
+    endDate?: string;
+  }
 ): Promise<{ entries: UniversalHistoryEntry[], nextLastVisibleDoc?: QueryDocumentSnapshot<DocumentData>, totalCount: number }> => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
-  
+
   const historyCollection = collection(db, FirebaseCollections.UNIVERSAL_HISTORY);
-  
-  // Get total count (consider if this is too slow for very large collections)
+  let q: Query<DocumentData> = historyCollection; // Empezamos con la colección base
+
+  // --- LÓGICA DE FILTRADO MEJORADA ---
+  // Aplicamos los filtros que vienen en el objeto
+  if (filters?.actorName) {
+    q = query(q, where('actorName', '==', filters.actorName));
+  }
+  if (filters?.startDate) {
+    q = query(q, where('timestamp', '>=', new Date(filters.startDate)));
+  }
+  if (filters?.endDate) {
+    // Añadimos 1 día para incluir el día completo en la búsqueda
+    const endOfDay = addDays(new Date(filters.endDate), 1);
+    q = query(q, where('timestamp', '<', endOfDay));
+  }
+
+  // La consulta del conteo total no usará filtros para seguir mostrando el total general
   const countSnapshot = await getCountFromServer(historyCollection);
   const totalCount = countSnapshot.data().count;
 
-  let q = query(historyCollection, orderBy('timestamp', 'desc'), limit(itemsPerPage));
-  
+  // Aplicamos el ordenamiento y la paginación a nuestra consulta ya filtrada
+  q = query(q, orderBy('timestamp', 'desc'), limit(itemsPerPage));
+
   if (lastVisibleDoc) {
     q = query(q, startAfter(lastVisibleDoc));
   }
-  
+
   const querySnapshot = await getDocs(q);
   const entries = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UniversalHistoryEntry));
   const nextLastVisibleDoc = querySnapshot.docs[querySnapshot.docs.length - 1];
-  
+
   return { entries, nextLastVisibleDoc, totalCount };
 };
 
@@ -487,16 +575,117 @@ export const deleteChecklistTemplate = (id: string): Promise<void> => {
  * Obtiene todos los justificantes que ya han sido resueltos (aprobados o rechazados).
  * @returns Una promesa con la lista de justificantes históricos.
  */
-export const getResolvedJustifications = (): Promise<Justification[]> => {
-  const justificationsCollection = collection(db, FirebaseCollections.JUSTIFICATIONS);
-  
+export const getResolvedJustifications = async () => {
+  const justificationsRef = collection(db, 'justifications');
+
+  // LA CONSULTA CORRECTA:
   const q = query(
-    justificationsCollection, 
-    where('status', 'in', ['approved', 'rejected']),
-    // --- CORRECCIÓN FINAL ---
-    // Ordenamos por 'createdAt', el campo que sí existe en tus documentos.
-    orderBy('createdAt', 'desc')
+    justificationsRef,
+    // Usamos 'in' para traer ambos estados: 'approved' (aprobado) y 'rejected' (rechazado)
+    // ¡Asegúrate de que los valores 'approved' y 'rejected' coincidan con los que guardas en la base de datos!
+    where('status', 'in', ['aprobado', 'rechazado']), 
+    // Ordenamos por fecha de creación para tener un historial cronológico
+    orderBy('createdAt', 'desc') 
   );
 
-  return getAllDocuments<Justification>(FirebaseCollections.JUSTIFICATIONS, q);
+  const querySnapshot = await getDocs(q);
+  
+  // Mapeamos los documentos al tipo Justification
+  const history = querySnapshot.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data()
+  })) as Justification[]; // Aseguramos el tipo de dato
+
+  return history;
 };
+
+// --- Specific ShiftReport functions ---
+
+// Obtiene el reporte de un turno específico
+export const getShiftReport = (shiftId: string): Promise<ShiftReport | null> => {
+  // Usamos la función genérica getDocument que ya tenemos
+  return getDocument<ShiftReport>(FirebaseCollections.SHIFT_REPORTS, shiftId);
+};
+
+// Crea o actualiza el reporte de un turno
+export const upsertShiftReport = (
+  shiftId: string, 
+  data: Partial<Omit<ShiftReport, 'id' | 'lastUpdated'>>
+): Promise<void> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+  const reportDocRef = doc(db, FirebaseCollections.SHIFT_REPORTS, shiftId);
+  // Usamos setDoc con 'merge: true'. Esto crea el documento si no existe,
+  // o actualiza los campos si ya existe, sin borrar los otros. ¡Es muy potente!
+  return setDoc(reportDocRef, { 
+    ...data, 
+    lastUpdated: serverTimestamp() 
+  }, { merge: true });
+};
+
+// --- Añade esta nueva función al final de firestoreService.ts ---
+
+// Paginated ShiftReport fetching
+export const getShiftReportsPage = async (
+  itemsPerPage: number, 
+  lastVisibleDoc?: QueryDocumentSnapshot<DocumentData>
+): Promise<{ entries: ShiftReport[], nextLastVisibleDoc?: QueryDocumentSnapshot<DocumentData>, totalCount: number }> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+  
+  const reportsCollection = collection(db, FirebaseCollections.SHIFT_REPORTS);
+  
+  // Obtenemos el conteo total de reportes
+  const countSnapshot = await getCountFromServer(reportsCollection);
+  const totalCount = countSnapshot.data().count;
+
+  // Creamos la consulta para obtener una página de reportes, ordenados por el más reciente
+  let q = query(reportsCollection, orderBy('lastUpdated', 'desc'), limit(itemsPerPage));
+  
+  if (lastVisibleDoc) {
+    q = query(q, startAfter(lastVisibleDoc));
+  }
+  
+  const querySnapshot = await getDocs(q);
+  const entries = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShiftReport));
+  const nextLastVisibleDoc = querySnapshot.docs[querySnapshot.docs.length - 1];
+  
+  return { entries, nextLastVisibleDoc, totalCount };
+};
+
+// Añade esta nueva función
+export const getJustificationsPage = async (
+  itemsPerPage: number, 
+  lastVisibleDoc?: QueryDocumentSnapshot<DocumentData>,
+  filters?: { userName?: string; status?: JustificationStatus; startDate?: string; endDate?: string }
+): Promise<{ entries: Justification[], nextLastVisibleDoc?: QueryDocumentSnapshot<DocumentData> }> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  let q: Query<DocumentData> = collection(db, FirebaseCollections.JUSTIFICATIONS);
+
+  // Aplicamos filtros si existen
+  if (filters?.userName) {
+    q = query(q, where('userName', '==', filters.userName));
+  }
+  if (filters?.status) {
+    q = query(q, where('status', '==', filters.status));
+  }
+  if (filters?.startDate) {
+    q = query(q, where('uploadedAt', '>=', new Date(filters.startDate)));
+  }
+  if (filters?.endDate) {
+    const endOfDay = addDays(new Date(filters.endDate), 1);
+    q = query(q, where('uploadedAt', '<', endOfDay));
+  }
+
+  // Aplicamos ordenamiento y paginación
+  q = query(q, orderBy('uploadedAt', 'desc'), limit(itemsPerPage));
+  if (lastVisibleDoc) {
+    q = query(q, startAfter(lastVisibleDoc));
+  }
+
+  const querySnapshot = await getDocs(q);
+  const entries = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Justification));
+  const nextLastVisibleDoc = querySnapshot.docs[querySnapshot.docs.length - 1];
+
+  return { entries, nextLastVisibleDoc };
+};
+

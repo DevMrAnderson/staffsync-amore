@@ -7,35 +7,63 @@ import Button from '../common/Button';
 import { useAuth } from '../../contexts/AuthContext';
 import { getOptimizedScheduleTemplate } from '../../services/aiService';
 import { useNotification } from '../../contexts/NotificationContext';
-import { PartialShiftForTemplate, Shift, ChecklistTemplate } from '../../types';
+import { PartialShiftForTemplate, Shift, ChecklistTemplate, ChangeRequest, Justification, ShiftReport } from '../../types';
 import LoadingSpinner from '../common/LoadingSpinner';
 import { getCurrentActiveShiftForUser, getChecklistTemplates, onPendingManagerChangeRequestsSnapshot,
-  onPendingJustificationsSnapshot, onUnreadNotificationsSnapshot, markNotificationAsRead } from '../../services/firestoreService';
+  onPendingJustificationsSnapshot, onUnreadNotificationsSnapshot, markNotificationAsRead, getShiftReport, upsertShiftReport, getPreviousShiftReport } from '../../services/firestoreService';
 import NotificationModal from '../common/NotificationModal';
 
 // --- El Widget para el Checklist ---
 interface ShiftChecklistWidgetProps {
   shift: Shift;
   checklist: ChecklistTemplate;
+  completedTasks: Record<string, boolean>;
+  onToggleTask: (task: string) => void;
+  notes: string;
+  onNotesChange: (notes: string) => void;
+  isSavingNotes: boolean;
+  previousShiftNotes?: string;
 }
-const ShiftChecklistWidget: React.FC<ShiftChecklistWidgetProps> = ({ shift, checklist }) => {
-  const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>({});
-  const handleToggleTask = (task: string) => {
-    setCompletedTasks(prev => ({ ...prev, [task]: !prev[task] }));
-  };
+const ShiftChecklistWidget: React.FC<ShiftChecklistWidgetProps> = ({ 
+  shift, checklist, completedTasks, onToggleTask, notes, onNotesChange, isSavingNotes, previousShiftNotes 
+}) => {
+
   return (
     <section className="mb-6 p-4 md:p-6 bg-white border-l-4 border-amore-red rounded-lg shadow-lg animate-fadeIn">
       <h2 className="text-xl font-bold text-amore-charcoal mb-1">Checklist del Turno Activo</h2>
-      <p className="text-sm text-amore-gray mb-4">
-        Turno: {shift.shiftTypeName} ({shift.start.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {shift.end.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})})
-      </p>
+      <p className="text-sm text-amore-gray mb-4">Turno: {shift.shiftTypeName} ({shift.start.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {shift.end.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})})</p>
+      
+      {previousShiftNotes && (
+        <div className="mb-4 p-3 bg-gray-100 border rounded-md">
+            <h4 className="font-semibold text-sm text-gray-600">Notas del Turno Anterior:</h4>
+            <p className="text-sm text-gray-800 whitespace-pre-wrap mt-1">{previousShiftNotes}</p>
+        </div>
+      )}
+      
       <div className="space-y-3">
         {checklist.tasks.map((task, index) => (
           <div key={index} className="flex items-center">
-            <input id={`task-${index}`} type="checkbox" className="h-5 w-5 rounded border-gray-300 text-amore-red focus:ring-red-400 cursor-pointer" checked={!!completedTasks[task]} onChange={() => handleToggleTask(task)} />
+            <input id={`task-${index}`} type="checkbox" className="h-5 w-5 rounded border-gray-300 text-amore-red focus:ring-red-400 cursor-pointer" 
+              checked={!!completedTasks[task]} 
+              onChange={() => onToggleTask(task)} // <--- Llama a la prop, no a una función local
+            />
             <label htmlFor={`task-${index}`} className={`ml-3 text-sm cursor-pointer ${completedTasks[task] ? 'text-gray-400 line-through' : 'text-amore-charcoal'}`}>{task}</label>
           </div>
         ))}
+      </div>
+<div className="mt-4 pt-4 border-t">
+        <label htmlFor="shiftNotes" className="block text-md font-semibold text-amore-charcoal mb-2">Notas del Turno</label>
+        <textarea
+          id="shiftNotes"
+          rows={4}
+          className="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-red-200 focus:border-amore-red"
+          placeholder="Añade observaciones, incidentes o notas para el siguiente turno..."
+          value={notes}
+          onChange={(e) => onNotesChange(e.target.value)}
+        />
+        <div className="text-right text-xs text-gray-400 h-4 mt-1">
+          {isSavingNotes && <p className="animate-pulse">Guardando...</p>}
+        </div>
       </div>
     </section>
   );
@@ -69,6 +97,10 @@ const GerenteDashboard: React.FC = () => {
   const [isLoadingChecklist, setIsLoadingChecklist] = useState(true);
   const [pendingChangesCount, setPendingChangesCount] = useState(0);
   const [pendingJustificationsCount, setPendingJustificationsCount] = useState(0);
+  const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>({});
+  const [shiftNotes, setShiftNotes] = useState('');
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [previousShiftNotes, setPreviousShiftNotes] = useState<string>('');
 
   // 1. Estados para manejar las notificaciones del gerente
   const [unreadNotifications, setUnreadNotifications] = useState<Notification[]>([]);
@@ -83,6 +115,41 @@ const GerenteDashboard: React.FC = () => {
       return () => unsubscribe();
     }
   }, [userData]);
+
+  // useEffect para buscar el turno y cargar los datos del reporte
+  useEffect(() => {
+    if (!userData) return;
+    const findActiveShiftAndReport = async () => {
+      setIsLoadingChecklist(true);
+      setPreviousShiftNotes(''); // Reseteamos las notas previas
+      try {
+        const shift = await getCurrentActiveShiftForUser(userData.id);
+        setActiveShift(shift);
+        if (shift) {
+          const templates = await getChecklistTemplates();
+          if (templates.length > 0) setActiveChecklist(templates[0]);
+          
+          const report = await getShiftReport(shift.id);
+          if (report) {
+            setCompletedTasks(report.completedTasks || {});
+            setShiftNotes(report.notes || '');
+          }
+
+          const prevReport = await getPreviousShiftReport(shift.start);
+          if (prevReport && prevReport.notes) {
+            setPreviousShiftNotes(prevReport.notes);
+          }
+
+
+        }
+      } catch (error: any) {
+        addNotification(`Error al buscar checklist: ${error.message}`, "error");
+      } finally {
+        setIsLoadingChecklist(false);
+      }
+    };
+    findActiveShiftAndReport();
+  }, [userData, addNotification]);
 
 
   useEffect(() => {
@@ -124,6 +191,61 @@ const GerenteDashboard: React.FC = () => {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!activeShift) return;
+    
+    // Se activa un temporizador cada vez que las notas cambian
+    const saveTimeout = setTimeout(() => {
+      // Cuando el temporizador termina (2 segundos después de dejar de escribir), guarda.
+      const saveNotes = async () => {
+        setIsSavingNotes(true);
+        try {
+          await upsertShiftReport(activeShift.id, { 
+            shiftId: activeShift.id,
+            managerId: userData!.id,
+            managerName: userData.name,
+            templateId: activeChecklist!.id,
+            shiftTypeName: activeShift.shiftTypeName,
+            notes: shiftNotes 
+          });
+        } catch (error) {
+          addNotification("No se pudieron guardar las notas.", "error");
+        } finally {
+          setIsSavingNotes(false);
+        }
+      };
+      saveNotes();
+    }, 2000); // 2 segundos de espera
+
+    // Limpia el temporizador si el usuario sigue escribiendo
+    return () => clearTimeout(saveTimeout);
+  }, [shiftNotes, activeShift, userData, activeChecklist, addNotification]);
+
+  // --- NUEVA FUNCIÓN PARA MARCAR TAREAS Y GUARDAR ---
+  const handleToggleTask = async (task: string) => {
+    if (!activeShift || !userData || !activeChecklist) return;
+
+    const newCompletedTasks = {
+      ...completedTasks,
+      [task]: !completedTasks[task],
+    };
+    setCompletedTasks(newCompletedTasks); // Actualiza la UI al instante
+
+    // Guarda el estado completo de las tareas en la base de datos
+    try {
+      await upsertShiftReport(activeShift.id, {
+        shiftId: activeShift.id,
+        managerId: userData.id,
+        managerName: userData.name,
+        templateId: activeChecklist.id,
+        shiftTypeName: activeShift.shiftTypeName,
+        completedTasks: newCompletedTasks,
+      });
+    } catch (error) {
+      addNotification("No se pudo guardar el progreso del checklist.", "error");
+    }
+  };
 
   const handleOptimizeSchedule = async () => {
     setLoadingTemplate(true);
@@ -255,7 +377,12 @@ const GerenteDashboard: React.FC = () => {
         {isLoadingChecklist ? (
           <div className="py-4"><LoadingSpinner text="Buscando turno activo..." /></div>
         ) : activeShift && activeChecklist ? (
-          <ShiftChecklistWidget shift={activeShift} checklist={activeChecklist} />
+          <ShiftChecklistWidget shift={activeShift} checklist={activeChecklist} completedTasks={completedTasks}
+              onToggleTask={handleToggleTask}
+              notes={shiftNotes}
+              onNotesChange={setShiftNotes}
+              isSavingNotes={isSavingNotes}
+              previousShiftNotes={previousShiftNotes} />
         ) : (
           <div className="text-center p-4 mb-6 bg-blue-50 border border-blue-200 rounded-lg text-blue-700">
             No tienes un turno activo en este momento. El checklist aparecerá aquí cuando comience tu turno.

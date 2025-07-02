@@ -7,9 +7,6 @@ import LoadingSpinner from '../common/LoadingSpinner';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale/es';
 import { DATE_FORMAT_SPA_DATETIME } from '../../constants';
-import { updateJustification, onPendingJustificationsSnapshot, serverTimestamp } from '../../services/firestoreService';
-import JustificationHistory from './JustificationHistory'; // Importamos el nuevo componente
-import JustificationPendingList from './JustificationPendingList';
 
 const JustificationHistory: React.FC = () => {
   const [history, setHistory] = useState<Justification[]>([]);
@@ -48,7 +45,7 @@ const JustificationHistory: React.FC = () => {
       ) : (
         <div className="space-y-4">
           {history.map((justification) => {
-            const isApproved = justification.status === 'approved';
+            const isApproved = justification.status === 'aprobado';
             return (
               <div key={justification.id} className={`border-l-4 p-4 rounded-r-lg bg-white shadow-sm ${isApproved ? 'border-green-500' : 'border-red-500'}`}>
                 <div className="flex justify-between items-start">

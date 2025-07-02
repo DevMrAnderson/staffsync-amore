@@ -1,3 +1,5 @@
+import { UserRole } from './types';
+
 export const APP_NAME = "Gestor de Turnos Amore";
 
 export const FirebaseCollections = {
@@ -9,6 +11,7 @@ export const FirebaseCollections = {
   UNIVERSAL_HISTORY: 'universalHistory',
   SHIFT_TEMPLATES: 'shiftTemplates',
   CHECKLIST_TEMPLATES: 'checklistTemplates',
+  SHIFT_REPORTS: 'shiftReports',
 };
 
 // Example Shift Type Names (these would ideally be created via an admin interface or seeded)
@@ -46,4 +49,23 @@ export const HISTORY_ACTIONS = {
   UPLOAD_JUSTIFICATION: "SUBIDA_JUSTIFICANTE",
   APPROVE_JUSTIFICATION: "APROBACION_JUSTIFICANTE",
   REJECT_JUSTIFICATION: "RECHAZO_JUSTIFICANTE",
+  MARK_ABSENCE: 'mark_absence',
 };
+
+// Define los niveles jerárquicos. Un empleado puede reemplazar a otro de su mismo nivel.
+export const ROLE_HIERARCHY = {
+  management: [UserRole.GERENTE],
+  kitchen_lead: [UserRole.COCINERO],
+  operations: [UserRole.MESERO, UserRole.BARTENDER, UserRole.AUXILIAR_COCINA, UserRole.LAVALOZA],
+};
+
+// Define el orden en que queremos que los roles aparezcan en las listas.
+export const ROLE_SORT_ORDER = [
+  UserRole.DUENO,
+  UserRole.GERENTE,
+  UserRole.COCINERO,
+  UserRole.AUXILIAR_COCINA,
+  UserRole.BARTENDER,
+  UserRole.MESERO,
+  UserRole.LAVALOZA,
+];

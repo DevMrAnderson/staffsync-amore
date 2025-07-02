@@ -3,21 +3,20 @@ import Navbar from '../common/Navbar';
 import Button from '../common/Button';
 import { useAuth } from '../../contexts/AuthContext';
 import LoadingSpinner from '../common/LoadingSpinner';
-import { User, UserRole, UniversalHistoryEntry, Shift, ShiftStatus } from '../../types';
-import { getAllUsersByRole, updateUser, createUserDocument, getUniversalHistoryPage, replaceShiftsForTemplate } from '../../services/firestoreService';
+import { User, UserRole, UniversalHistoryEntry } from '../../types';
+import { getAllUsersByRole, updateUser, createUserDocument, getUniversalHistoryPage } from '../../services/firestoreService';
 import { getAuth, createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 import { initializeApp } from 'firebase/app';
 import { firebaseConfig } from '../../services/firebase';
 import Modal from '../common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
-import { format, startOfDay, endOfDay } from 'date-fns';
+import { format } from 'date-fns';
 import { es } from 'date-fns/locale/es';
-import { DATE_FORMAT_SPA_DATETIME, HISTORY_ACTIONS } from '../../constants';
-import { QueryDocumentSnapshot, DocumentData, Timestamp, collection, query, where, getDocs, writeBatch, doc, serverTimestamp } from 'firebase/firestore';
+import { DATE_FORMAT_SPA_DATETIME, HISTORY_ACTIONS, ROLE_SORT_ORDER } from '../../constants';
+import { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import GerenteDashboard from '../gerente/GerenteDashboard';
 import ChecklistManager from './ChecklistManager';
-import { db } from '../../services/firebase';
-
+import ShiftReportsView from './ShiftReportsView';
 
 // --- User Management Component ---
 interface UserFormState {
@@ -31,16 +30,32 @@ interface UserFormState {
 const UserManagementView: React.FC = () => {
   const { addNotification } = useNotification();
   const { userData: currentAdmin } = useAuth();
-  const [users, setUsers] = useState<User[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserFormState | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
+
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    confirmText: string;
+    confirmVariant: 'danger' | 'success' | 'warning';
+  } | null>(null);
 
   const fetchUsers = useCallback(async () => {
     setIsLoading(true);
     try {
-      const allUsers = await getAllUsersByRole();
-      setUsers(allUsers);
+      const usersFromDB = await getAllUsersByRole();
+      const sortedUsers = usersFromDB.sort((a, b) => {
+        const indexA = ROLE_SORT_ORDER.indexOf(a.role);
+        const indexB = ROLE_SORT_ORDER.indexOf(b.role);
+        return indexA - indexB;
+      });
+      setAllUsers(sortedUsers);
     } catch (error: any) {
       addNotification(`Error al cargar usuarios: ${error.message}`, 'error');
     }
@@ -51,15 +66,65 @@ const UserManagementView: React.FC = () => {
     fetchUsers();
   }, [fetchUsers]);
 
-  const handleOpenUserModal = (user?: User) => {
-    if (user) {
-      setEditingUser({ id: user.id, email: user.email, name: user.name, role: user.role });
-    } else {
-      setEditingUser({ email: '', name: '', role: UserRole.COCINERO, password: '' });
-    }
-    setIsUserModalOpen(true);
+  const handleDeactivateUser = (userToDeactivate: User) => {
+    setConfirmState({
+      isOpen: true,
+      title: 'Confirmar Desactivación',
+      message: `¿Estás seguro de que quieres desactivar a ${userToDeactivate.name}? El usuario ya no podrá iniciar sesión.`,
+      confirmText: 'Sí, Desactivar',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        try {
+          await updateUser(userToDeactivate.id, { status: 'inactive' });
+          addNotification(`Usuario ${userToDeactivate.name} desactivado.`, 'success');
+          fetchUsers();
+        } catch (error: any) { addNotification(`Error al desactivar: ${error.message}`, 'error'); }
+      }
+    });
+  };
+  
+  const handleReactivateUser = (userToReactivate: User) => {
+    setConfirmState({
+      isOpen: true,
+      title: 'Confirmar Reactivación',
+      message: `¿Estás seguro de que quieres reactivar a ${userToReactivate.name}?`,
+      confirmText: 'Sí, Reactivar',
+      confirmVariant: 'success',
+      onConfirm: async () => {
+        try {
+          await updateUser(userToReactivate.id, { status: 'active' });
+          addNotification(`Usuario ${userToReactivate.name} reactivado con éxito.`, 'success');
+          fetchUsers();
+        } catch (error: any) { addNotification(`Error al reactivar: ${error.message}`, 'error'); }
+      }
+    });
+  };
+  
+  const handleSendResetEmail = () => {
+    if (!editingUser || !editingUser.email) return;
+    const emailToSend = editingUser.email; // Guardamos el email por si el modal se cierra
+    setConfirmState({
+        isOpen: true,
+        title: 'Confirmar Envío de Correo',
+        message: `Se enviará un correo para restablecer la contraseña a ${emailToSend}. ¿Continuar?`,
+        confirmText: 'Sí, Enviar Correo',
+        confirmVariant: 'warning',
+        onConfirm: async () => {
+            try {
+                await sendPasswordResetEmail(auth, emailToSend);
+                addNotification(`Correo de restablecimiento enviado a ${emailToSend}.`, 'success');
+            } catch (error: any) {
+                addNotification(`Error al enviar el correo: ${error.message}`, 'error');
+            }
+        }
+    });
   };
 
+  const handleOpenUserModal = (user?: User) => {
+    if (user) { setEditingUser({ id: user.id, email: user.email, name: user.name, role: user.role });
+    } else { setEditingUser({ email: '', name: '', role: UserRole.COCINERO, password: '' }); }
+    setIsUserModalOpen(true);
+  };
   const handleUserFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     if (!editingUser) return;
     const { name, value } = e.target;
@@ -77,17 +142,19 @@ const UserManagementView: React.FC = () => {
       } else {
         if (!editingUser.password || editingUser.password.length < 6) {
           addNotification("La contraseña debe tener al menos 6 caracteres.", "warning");
-          setIsLoading(false);
-          return;
+          setIsLoading(false); return;
         }
         const tempApp = initializeApp(firebaseConfig, `user-creation-${Date.now()}`);
         const tempAuth = getAuth(tempApp);
         const userCredential = await createUserWithEmailAndPassword(tempAuth, editingUser.email, editingUser.password);
         await updateProfile(userCredential.user, { displayName: editingUser.name });
+        
         const newUserFirestoreData: Omit<User, 'id' | 'createdAt'> = {
-          email: editingUser.email,
-          name: editingUser.name,
-          role: editingUser.role,
+          email: editingUser.email, 
+          name: editingUser.name, 
+          role: editingUser.role, 
+          status: 'active',
+          passwordResetRequired: true,
         };
         await createUserDocument(userCredential.user.uid, newUserFirestoreData);
         addNotification(`Usuario ${editingUser.name} creado con éxito.`, 'success');
@@ -107,37 +174,54 @@ const UserManagementView: React.FC = () => {
     }
   };
 
-  if (isLoading && users.length === 0) return <LoadingSpinner text="Cargando gestión de usuarios..."/>;
+  const filteredUsers = allUsers
+    .filter(user => showInactive ? user.status === 'inactive' : user.status !== 'inactive')
+    .filter(user => 
+      user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      user.email.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+  if (isLoading && allUsers.length === 0) return <LoadingSpinner text="Cargando gestión de usuarios..."/>;
 
   return (
-    <div className="p-4 bg-white rounded-lg shadow animate-fadeIn">
-      <div className="flex justify-between items-center mb-4">
+    <div className="p-4">
+      <div className="flex flex-col sm:flex-row justify-between items-center mb-4 gap-4">
         <h3 className="text-xl font-semibold text-amore-charcoal">Gestión de Usuarios</h3>
+        <div className="flex items-center bg-gray-200 p-1 rounded-full">
+            <button onClick={() => setShowInactive(false)} className={`px-4 py-1 text-sm rounded-full transition-colors ${!showInactive ? 'bg-white shadow text-amore-red font-semibold' : 'text-gray-600'}`}>Activos</button>
+            <button onClick={() => setShowInactive(true)} className={`px-4 py-1 text-sm rounded-full transition-colors ${showInactive ? 'bg-white shadow text-amore-red font-semibold' : 'text-gray-600'}`}>Inactivos</button>
+        </div>
+        <div className="relative">
+          <input type="text" placeholder="Buscar en la lista actual..." className="p-2 pl-8 border rounded-md w-full sm:w-56" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}/>
+          <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+        </div>
         <Button onClick={() => handleOpenUserModal()} variant="primary" icon={<i className="fas fa-plus mr-2"></i>}>Nuevo Usuario</Button>
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-100">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-amore-gray uppercase tracking-wider">Nombre</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-amore-gray uppercase tracking-wider">Email</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-amore-gray uppercase tracking-wider">Rol</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-amore-gray uppercase tracking-wider">Acciones</th>
-            </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {users.map(user => (
+            {filteredUsers.map(user => (
               <tr key={user.id}>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-amore-charcoal">{user.name}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-amore-gray">{user.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-amore-gray capitalize">{user.role}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <Button onClick={() => handleOpenUserModal(user)} size="sm" variant="light" icon={<i className="fas fa-edit"></i>} className="mr-2">Editar</Button>
+                  {showInactive ? (
+                    <Button onClick={() => handleReactivateUser(user)} size="sm" variant="success" icon={<i className="fas fa-user-check"></i>}>Reactivar</Button>
+                  ) : (
+                    <>
+                      <Button onClick={() => handleOpenUserModal(user)} size="sm" variant="light" icon={<i className="fas fa-edit"></i>} className="mr-2">Editar</Button>
+                      <Button onClick={() => handleDeactivateUser(user)} size="sm" variant="danger" icon={<i className="fas fa-user-slash"></i>}>Desactivar</Button>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        {filteredUsers.length === 0 && !isLoading && ( <p className="text-center p-8 text-amore-gray">No se encontraron usuarios.</p> )}
       </div>
       {isUserModalOpen && editingUser && (
         <Modal isOpen={isUserModalOpen} onClose={() => setIsUserModalOpen(false)} title={editingUser.id ? 'Editar Usuario' : 'Crear Nuevo Usuario'} size="md"
@@ -149,27 +233,46 @@ const UserManagementView: React.FC = () => {
           }
         >
           <form id="userForm" onSubmit={handleSaveUser} className="space-y-4">
-            <div>
-              <label htmlFor="name" className="block text-sm font-medium">Nombre</label>
-              <input type="text" name="name" id="name" value={editingUser.name} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md"/>
-            </div>
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium">Email</label>
-              <input type="email" name="email" id="email" value={editingUser.email} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md" disabled={!!editingUser.id} />
-            </div>
-            {!editingUser.id && (
-              <div>
-                <label htmlFor="password">Contraseña (min. 6 caracteres)</label>
-                <input type="password" name="password" id="password" value={editingUser.password || ''} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md" />
-              </div>
-            )}
-            <div>
-              <label htmlFor="role" className="block text-sm font-medium">Rol</label>
-              <select name="role" id="role" value={editingUser.role} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md capitalize">
-                {Object.values(UserRole).map(role => <option key={role} value={role} className="capitalize">{role}</option>)}
-              </select>
-            </div>
+            <div><label htmlFor="name" className="block text-sm font-medium">Nombre</label><input type="text" name="name" id="name" value={editingUser.name} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md"/></div>
+            <div><label htmlFor="email" className="block text-sm font-medium">Email</label><input type="email" name="email" id="email" value={editingUser.email} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md" disabled={!!editingUser.id} /></div>
+            {!editingUser.id && (<div><label htmlFor="password">Contraseña (min. 6 caracteres)</label><input type="password" name="password" id="password" value={editingUser.password || ''} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md" /></div>)}
+            <div><label htmlFor="role" className="block text-sm font-medium">Rol</label><select name="role" id="role" value={editingUser.role} onChange={handleUserFormChange} required className="mt-1 w-full p-2 border rounded-md capitalize">{Object.values(UserRole).map(role => <option key={role} value={role} className="capitalize">{role}</option>)}</select></div>
           </form>
+
+          {editingUser.id && (
+            <div className="mt-6 border-t pt-4">
+               <h4 className="text-md font-semibold text-amore-charcoal mb-2">Acciones de Cuenta</h4>
+               <Button onClick={handleSendResetEmail} variant="warning" icon={<i className="fas fa-key mr-2"></i>}>
+                   Enviar Correo de Restablecimiento de Contraseña
+               </Button>
+            </div>
+          )}
+
+        </Modal>
+      )}
+
+      {confirmState?.isOpen && (
+        <Modal
+            isOpen={confirmState.isOpen}
+            onClose={() => setConfirmState(null)}
+            title={confirmState.title}
+            size="sm"
+            footer={
+                <div className="flex justify-end gap-2">
+                    <Button variant="light" onClick={() => setConfirmState(null)}>Cancelar</Button>
+                    <Button
+                        variant={confirmState.confirmVariant}
+                        onClick={() => {
+                            confirmState.onConfirm();
+                            setConfirmState(null);
+                        }}
+                    >
+                        {confirmState.confirmText}
+                    </Button>
+                </div>
+            }
+        >
+            <p className="text-amore-gray">{confirmState.message}</p>
         </Modal>
       )}
     </div>
@@ -177,71 +280,146 @@ const UserManagementView: React.FC = () => {
 };
 
 // --- Universal History Component ---
+// Reemplaza tu componente UniversalHistoryView completo con esta nueva versión
 const UniversalHistoryView: React.FC = () => {
-  const [history, setHistory] = useState<UniversalHistoryEntry[]>([]);
+  const [allHistory, setAllHistory] = useState<UniversalHistoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [lastVisible, setLastVisible] = useState<QueryDocumentSnapshot<DocumentData> | undefined>(undefined);
   const [hasMore, setHasMore] = useState(true);
   const [totalHistoryItems, setTotalHistoryItems] = useState(0);
 
+  const [filters, setFilters] = useState({
+    actorName: '',
+    action: '',
+    startDate: '',
+    endDate: '',
+  });
+
+  const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFilters(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  };
+  
   const fetchHistory = useCallback(async (loadMore = false) => {
     setIsLoading(true);
     try {
-      const { entries, nextLastVisibleDoc, totalCount } = await getUniversalHistoryPage(10, loadMore ? lastVisible : undefined);
-      setHistory(prev => loadMore ? [...prev, ...entries] : entries);
+      // Usaremos un truco: para la primera carga, pedimos más items para tener una buena base para filtrar
+      const itemsToFetch = loadMore ? 10 : 50; 
+      const lastDoc = loadMore ? lastVisible : undefined;
+      
+      const { entries, nextLastVisibleDoc, totalCount } = await getUniversalHistoryPage(itemsToFetch, lastDoc);
+      
+      setAllHistory(prev => loadMore ? [...prev, ...entries] : entries);
       setLastVisible(nextLastVisibleDoc);
-      setHasMore(entries.length === 10);
-      if (!loadMore) setTotalHistoryItems(totalCount);
+      
+      if (!loadMore) {
+        setTotalHistoryItems(totalCount);
+      }
+      // La condición de 'hasMore' se simplifica por ahora
+      setHasMore(entries.length === itemsToFetch);
+
     } catch (error: any) {
       console.error("Error fetching history:", error);
     } finally {
       setIsLoading(false);
     }
-  }, [lastVisible]);
+  }, [lastVisible]); // Quitamos allHistory.length para evitar bucles de carga
 
   useEffect(() => {
     fetchHistory();
   }, []);
 
-  if (isLoading && history.length === 0) return <LoadingSpinner text="Cargando historial..."/>;
+  const filteredHistory = allHistory.filter(entry => {
+    const nameMatch = entry.actorName.toLowerCase().includes(filters.actorName.toLowerCase());
+    const actionMatch = entry.action.replace(/_/g, ' ').toLowerCase().includes(filters.action.toLowerCase());
+    
+    // --- LÓGICA DE FECHA CORREGIDA Y MÁS ROBUSTA ---
+    const entryDate = entry.timestamp.toDate();
+    let dateMatch = true; // Asumimos que coincide a menos que un filtro diga lo contrario
+
+    if (filters.startDate) {
+      // Creamos la fecha de inicio al principio del día para evitar problemas de zona horaria
+      const startDate = new Date(filters.startDate + 'T00:00:00');
+      if (entryDate < startDate) {
+        dateMatch = false;
+      }
+    }
+    if (filters.endDate) {
+      // Creamos la fecha de fin al final del día
+      const endDate = new Date(filters.endDate + 'T23:59:59');
+      if (entryDate > endDate) {
+        dateMatch = false;
+      }
+    }
+    // --- FIN DE LA LÓGICA CORREGIDA ---
+
+    return nameMatch && actionMatch && dateMatch;
+  });
+
+  if (isLoading && allHistory.length === 0) return <LoadingSpinner text="Cargando historial..."/>;
 
   return (
-    <div className="p-4 bg-white rounded-lg shadow animate-fadeIn">
-      <h3 className="text-xl font-semibold mb-4 text-amore-charcoal">Historial Universal (Total: {totalHistoryItems})</h3>
-      <div className="mb-4 text-sm text-gray-500 italic">Filtros (por fecha, usuario, accion) se implementarian aqui.</div>
-      {history.length === 0 && !isLoading ? <p>No hay entradas en el historial.</p> : (
+    <div className="p-4">
+      <h3 className="text-xl font-semibold mb-4 text-amore-charcoal">Historial Universal ({totalHistoryItems})</h3>
+      
+      <div className="mb-4 p-4 bg-gray-50 rounded-lg border grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div>
+            <label htmlFor="actorName" className="block text-sm font-medium text-gray-700">Filtrar por Nombre</label>
+            <input type="text" name="actorName" id="actorName" className="mt-1 w-full p-2 border rounded-md" placeholder="Nombre..." value={filters.actorName} onChange={handleFilterChange} />
+          </div>
+          <div>
+            <label htmlFor="action" className="block text-sm font-medium text-gray-700">Filtrar por Acción</label>
+            <input type="text" name="action" id="action" className="mt-1 w-full p-2 border rounded-md" placeholder="Ej: crear, publicar..." value={filters.action} onChange={handleFilterChange}/>
+          </div>
+          <div>
+            <label htmlFor="startDate" className="block text-sm font-medium text-gray-700">Desde</label>
+            <input type="date" name="startDate" id="startDate" className="mt-1 w-full p-2 border rounded-md" value={filters.startDate} onChange={handleFilterChange} />
+          </div>
+          <div>
+            <label htmlFor="endDate" className="block text-sm font-medium text-gray-700">Hasta</label>
+            <input type="date" name="endDate" id="endDate" className="mt-1 w-full p-2 border rounded-md" value={filters.endDate} onChange={handleFilterChange} />
+          </div>
+      </div>
+
+      {filteredHistory.length === 0 && !isLoading ? (
+        <p className="text-center p-8 text-amore-gray">No se encontraron entradas para los filtros aplicados.</p>
+      ) : (
         <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
-          {history.map(entry => (
+          {filteredHistory.map(entry => (
             <div key={entry.id} className="p-3 bg-gray-50 rounded-md border border-gray-200 text-sm">
-              <p><strong>Accion:</strong> {entry.action.replace(/_/g, ' ')}</p>
-              <p><strong>Actor:</strong> {entry.actorName} ({entry.actorId.substring(0,8)}...)</p>
+              <p className="font-semibold text-amore-charcoal capitalize"><strong>Acción:</strong> {entry.action.replace(/_/g, ' ')}</p>
+              <p><strong>Actor:</strong> <span className="font-medium text-amore-red">{entry.actorName}</span></p>
               <p><strong>Fecha:</strong> {entry.timestamp ? format(entry.timestamp.toDate(), DATE_FORMAT_SPA_DATETIME, { locale: es }) : 'N/A'}</p>
-              {entry.details && <details className="text-xs mt-1"><summary>Detalles</summary><pre className="bg-gray-200 p-1 rounded text-xs overflow-x-auto">{JSON.stringify(entry.details, null, 2)}</pre></details>}
+              {entry.details && <details className="text-xs mt-1"><summary className="cursor-pointer">Detalles</summary><pre className="mt-1 bg-gray-200 p-2 rounded text-xs overflow-x-auto">{JSON.stringify(entry.details, null, 2)}</pre></details>}
             </div>
           ))}
         </div>
       )}
+
       {hasMore && !isLoading && (
-        <Button onClick={() => fetchHistory(true)} isLoading={isLoading} variant="secondary" className="mt-4">Cargar Mas</Button>
+        <div className="mt-4 text-center">
+          <Button onClick={() => fetchHistory(true)} isLoading={isLoadingMore} variant="secondary">Cargar Más Registros</Button>
+        </div>
       )}
-      {!hasMore && history.length > 0 && <p className="text-center text-gray-500 mt-4 text-sm">Fin del historial.</p>}
     </div>
   );
 };
 
-// --- Main Dueno Dashboard Component ---
-type DuenoView = 'userManagement' | 'universalHistory' | 'managerFunctions' | 'checklistManagement';
 
+
+// --- Main Dueno Dashboard Component ---
+type DuenoView = 'userManagement' | 'universalHistory' | 'managerFunctions' | 'checklistManagement' | 'shiftReports';
 const DUENO_VIEWS_CONFIG: {id: DuenoView, label: string, icon: string}[] = [
     { id: 'managerFunctions', label: 'Funciones de Gerente', icon: 'fas fa-briefcase'},
     { id: 'userManagement', label: 'Gestión de Usuarios', icon: 'fas fa-users-cog' },
     { id: 'checklistManagement', label: 'Gestión de Checklists', icon: 'fas fa-tasks' },
+    { id: 'shiftReports', label: 'Reportes de Turno', icon: 'fas fa-clipboard-check' },
     { id: 'universalHistory', label: 'Historial Universal', icon: 'fas fa-history' },
 ];
 
 const DuenoDashboard: React.FC = () => {
   const { userData } = useAuth();
-  const [activeView, setActiveView] = useState<DuenoView>('managerFunctions');
+  const [activeView, setActiveView] = useState<DuenoView>('userManagement');
 
   if (!userData) {
     return (
@@ -257,6 +435,7 @@ const DuenoDashboard: React.FC = () => {
       case 'universalHistory': return <UniversalHistoryView />;
       case 'managerFunctions': return <GerenteDashboard />;
       case 'checklistManagement': return <ChecklistManager />;
+      case 'shiftReports': return <ShiftReportsView />;
       default: 
         const _exhaustiveCheck: never = activeView;
         return <p>Vista no implementada: {_exhaustiveCheck}</p>;

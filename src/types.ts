@@ -16,6 +16,8 @@ export interface User {
   name: string;
   role: UserRole;
   createdAt: Timestamp;
+  status?: 'active' | 'inactive';
+  passwordResetRequired?: boolean;
 }
 
 export interface ChecklistItem {
@@ -29,7 +31,7 @@ export type Justification = {
   employeeName: string;
   fileUrl: string;
   fileName: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pendiente' | 'aprovado' | 'rechazado';
   managerNotes?: string; // Las notas del gerente son opcionales
   submittedAt: Date;
   createdAt?: Date; // La fecha de resolución es opcional
@@ -55,7 +57,8 @@ export enum ShiftStatus {
   COMPLETADO = 'completado',
   AUSENCIA_JUSTIFICADA = 'ausencia_justificada',
   FALTA_INJUSTIFICADA = 'falta_injustificada',
-  PENDIENTE = 'pendiente', // <-- NUEVO ESTADO
+  PENDIENTE = 'pendiente',
+  JUSTIFICACION_PENDIENTE = 'justificacion_pendiente', // <-- NUEVO ESTADO
 }
 
 export interface Shift {
@@ -103,7 +106,7 @@ export interface ChangeRequest {
 
 export enum JustificationStatus {
   PENDIENTE = 'pendiente',
-  REVISADO = 'revisado', // Manager has seen it, but not yet approved/rejected
+  REVISADO = 'revisado', 
   APROBADO = 'aprobado',
   RECHAZADO = 'rechazado',
 }
@@ -166,3 +169,18 @@ export type Notification = {
   type: string;
   relatedDocId?: string;
 };
+
+export interface ShiftReport {
+  id: string; // Será el mismo que el ID del Turno (Shift)
+  shiftId: string;
+  managerId: string;
+  managerName?: string;
+  templateId: string;
+  shiftTypeName?: string;
+  // Guardaremos un mapa de tareas y su estado (completada o no)
+  completedTasks: {
+    [task: string]: boolean;
+  };
+  notes?: string;
+  lastUpdated: Timestamp;
+}
