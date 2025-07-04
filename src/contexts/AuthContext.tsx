@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import type { User as FirebaseUser } from 'firebase/auth';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, Unsubscribe } from 'firebase/firestore';
 import { auth, db } from '../services/firebase';
 import { User as AppUser } from '../types';
 import { FirebaseCollections } from '../constants';
+import { getAuth, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 
 interface AuthContextType {
   user: FirebaseUser | null;
@@ -18,63 +18,53 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userData, setUserData] = useState<AppUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // Siempre inicia en true
 
-  // --- NUEVA ESTRUCTURA ---
-
-  // Efecto #1: Solo se encarga de escuchar el estado de autenticación (login/logout).
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
-      setLoading(false); // Dejamos de cargar una vez que sabemos si hay usuario o no.
-    });
+    const auth = getAuth();
+    
+    // onAuthStateChanged es la forma correcta y en tiempo real de saber el estado del usuario.
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        // Si hay un usuario, buscamos sus datos en Firestore INMEDIATAMENTE.
+        const userDocRef = doc(db, FirebaseCollections.USERS, firebaseUser.uid);
+        const userDoc = await getDoc(userDocRef);
 
-    // Se limpia la suscripción de auth cuando el componente se desmonta.
-    return () => unsubscribeAuth();
-  }, []); // Se ejecuta solo una vez.
-
-  // Efecto #2: Reacciona cuando el 'user' cambia.
-  useEffect(() => {
-    // Si no hay usuario (logout), limpiamos los datos y no hacemos nada más.
-    if (!user) {
-      setUserData(null);
-      return;
-    }
-
-    // Si SÍ hay un usuario, creamos la suscripción a sus datos en Firestore.
-    const userDocRef = doc(db, FirebaseCollections.USERS, user.uid);
-    const unsubscribeFirestore = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setUserData({ id: docSnap.id, ...docSnap.data() } as AppUser);
+        setUser(firebaseUser); // Guardamos el usuario de Firebase Auth
+        
+        if (userDoc.exists()) {
+          setUserData({ id: userDoc.id, ...userDoc.data() } as AppUser); // Guardamos los datos de Firestore
+        } else {
+          console.warn("No se encontró documento de usuario para UID:", firebaseUser.uid);
+          setUserData(null);
+        }
       } else {
-        console.warn("No se encontro el documento de usuario en Firestore para UID:", user.uid);
+        // Si no hay usuario, limpiamos ambos estados.
+        setUser(null);
         setUserData(null);
       }
-    }, (error) => {
-      console.error("Error al obtener datos de usuario de Firestore:", error);
-      setUserData(null);
+      
+      // La clave: Solo dejamos de cargar DESPUÉS de que toda la lógica ha terminado.
+      setLoading(false);
     });
 
-    // La magia de React: esta función de limpieza se ejecuta AUTOMÁTICAMENTE
-    // cuando el 'user' cambia (es decir, cuando se cierra la sesión).
-    // Esto asegura que nos damos de baja del listener ANTES de que el usuario sea nulo.
-    return () => unsubscribeFirestore();
-
-  }, [user]); // La dependencia [user] es la clave.
-
-  // --- FIN DE LA NUEVA ESTRUCTURA ---
+    // Esta función se ejecuta cuando el componente se desmonta para evitar fugas de memoria.
+    return () => unsubscribe();
+  }, []); // El array vacío asegura que esto se ejecute solo una vez.
 
   const logout = async () => {
     try {
       await auth.signOut();
-      // No es necesario limpiar los estados aquí, el useEffect de arriba lo hará automáticamente.
+      // No es necesario limpiar estados aquí, onAuthStateChanged lo hará automáticamente.
     } catch (error) {
-      console.error("Error durante el cierre de sesion:", error);
+      console.error("Error durante el cierre de sesión:", error);
     }
   };
 
+  const value = { user, userData, loading, logout };
+
   return (
-    <AuthContext.Provider value={{ user, userData, loading, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

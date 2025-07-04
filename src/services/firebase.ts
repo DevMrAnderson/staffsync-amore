@@ -2,11 +2,12 @@ import { initializeApp, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
+import { getFunctions } from 'firebase/functions';
 
 // La configuración que pegaste desde la consola de Firebase.
 // Asegúrate de que estos sean tus datos reales.
 export const firebaseConfig = {
-  apiKey: "AIzaSyCe0OwKxuiZvVev8997VfTHCiiC43jxbrc",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "staffsync-amore.firebaseapp.com",
   projectId: "staffsync-amore",
   storageBucket: "staffsync-amore.firebasestorage.app",
@@ -21,6 +22,7 @@ const app: FirebaseApp = initializeApp(firebaseConfig);
 export const auth: Auth = getAuth(app);
 export const db: Firestore = getFirestore(app);
 export const storage: FirebaseStorage = getStorage(app);
+export const functions = getFunctions(app, 'us-east1');
 
 // Opcional: exportar la 'app' por si se necesita en otro lado
 export default app;

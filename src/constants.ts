@@ -11,6 +11,7 @@ export const FirebaseCollections = {
   UNIVERSAL_HISTORY: 'universalHistory',
   SHIFT_TEMPLATES: 'shiftTemplates',
   CHECKLIST_TEMPLATES: 'checklistTemplates',
+  SHIFT_CHECKLIST_TEMPLATES: 'shiftChecklistTemplates',
   SHIFT_REPORTS: 'shiftReports',
 };
 
@@ -56,7 +57,8 @@ export const HISTORY_ACTIONS = {
 export const ROLE_HIERARCHY = {
   management: [UserRole.GERENTE],
   kitchen_lead: [UserRole.COCINERO],
-  operations: [UserRole.MESERO, UserRole.BARTENDER, UserRole.AUXILIAR_COCINA, UserRole.LAVALOZA],
+  operations: [UserRole.MESERO, UserRole.BARTENDER, UserRole.AUXILIAR_COCINA],
+  support: [UserRole.LAVALOZA],
 };
 
 // Define el orden en que queremos que los roles aparezcan en las listas.

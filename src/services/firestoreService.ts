@@ -35,11 +35,11 @@ import {
   UniversalHistoryEntry,
   UserRole,
   ChangeRequestStatus,
+  ShiftStatus,
   JustificationStatus
 } from '../types';
 import { startOfDay, endOfDay, startOfMonth, endOfMonth, startOfWeek, addDays, endOfWeek } from 'date-fns'; // Asegúrate de tener esto
 
-import { Notification } from '../types'; // Asegúrate de que Notification esté en tus tipos
 
 /**
  * Escucha en tiempo real las notificaciones NO LEÍDAS de un usuario específico.
@@ -76,18 +76,26 @@ export const markNotificationAsRead = (notificationId: string): Promise<void> =>
   return updateDocument('notifications', notificationId, { isRead: true });
 };
 
-export const getShiftsForMonth = async (date: Date): Promise<Shift[]> => {
+export const getShiftsForMonth = async (date: Date, userId?: string): Promise<Shift[]> => {
+  // 1. El '?' hace que el parámetro userId sea OPCIONAL.
   if (!db) throw new Error("Firestore DB no esta inicializada.");
 
   const monthStart = startOfMonth(date);
   const monthEnd = endOfMonth(date);
 
-  const q = query(
+  // 2. Creamos la consulta base, solo con el rango de fechas.
+  let q = query(
     collection(db, FirebaseCollections.SHIFTS),
     where('start', '>=', Timestamp.fromDate(monthStart)),
     where('start', '<=', Timestamp.fromDate(monthEnd))
   );
 
+  // 3. AÑADIMOS el filtro de 'userId' SOLO SI se nos proporciona uno.
+  if (userId) {
+    q = query(q, where('userId', '==', userId));
+  }
+
+  // Ejecutamos la consulta (ya sea con o sin el filtro de userId)
   return getAllDocuments<Shift>(FirebaseCollections.SHIFTS, q);
 };
 
@@ -421,29 +429,49 @@ export const getChangeRequest = (id: string): Promise<ChangeRequest | null> => g
 export const updateChangeRequest = (id: string, data: Partial<ChangeRequest>): Promise<void> => updateDocument<ChangeRequest>(FirebaseCollections.CHANGE_REQUESTS, id, data);
 
 // Listener for change requests relevant to a specific employee (proposed to them)
-export const onProposedChangeRequestsForUserSnapshot = (userId: string, callback: (requests: ChangeRequest[]) => void): Unsubscribe => {
-  if (!db) throw new Error("Firestore DB no esta inicializada.");
+export const onProposedChangeRequestsForUserSnapshot = (userId: string, callback: (requests: ChangeRequest[]) => void): () => void => {
   const q = query(
-    collection(db, FirebaseCollections.CHANGE_REQUESTS),
+    collection(db, 'changeRequests'),
     where('proposedUserId', '==', userId),
-    where('status', '==', ChangeRequestStatus.PENDIENTE_ACEPTACION_EMPLEADO),
-    orderBy('requestedAt', 'desc')
+    where('status', '==', ChangeRequestStatus.PROPUESTO_EMPLEADO)
   );
+
   return onSnapshot(q, async (snapshot) => {
-    const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ChangeRequest));
-    // Populate with original shift details and requesting user name
-    const populatedRequests = await Promise.all(requests.map(async req => {
-        const originalShift = req.originalShiftId ? await getShift(req.originalShiftId) : null;
-        const requestingUser = req.requestingUserId ? await getUser(req.requestingUserId) : null;
-        const shiftType = originalShift?.shiftTypeId ? await getShiftType(originalShift.shiftTypeId) : null;
-        return { 
-            ...req, 
-            originalShift: originalShift ? {...originalShift, shiftType: shiftType || undefined } : undefined, 
-            requestingUserName: requestingUser?.name || 'Desconocido'
-        };
-    }));
+    // 1. Obtenemos las solicitudes como antes
+    const requestsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as ChangeRequest);
+
+    // 2. "Poblamos" cada solicitud con los datos del turno original
+    const populatedRequests = await Promise.all(
+      requestsData.map(async (req) => {
+        // Si no tenemos el objeto originalShift pero sí su ID, lo buscamos
+        if (req.originalShiftId && !req.originalShift) {
+          const shiftDoc = await getDoc(doc(db, 'shifts', req.originalShiftId));
+          if (shiftDoc.exists()) {
+            // Incrustamos el objeto completo del turno en la solicitud
+            return { ...req, originalShift: { id: shiftDoc.id, ...shiftDoc.data() } as Shift };
+          }
+        }
+        return req; // Devolvemos la solicitud como estaba si no hay nada que poblar
+      })
+    );
+    
+    // 3. Enviamos las solicitudes ya completas al componente
     callback(populatedRequests);
-  }, (error) => console.error("Error en onProposedChangeRequestsForUserSnapshot:", error));
+  });
+};
+
+// Listener para solicitudes que TÚ hiciste y ya fueron aceptadas
+export const onAcceptedChangeRequestsForUserSnapshot = (userId: string, callback: (requests: ChangeRequest[]) => void): () => void => {
+  const q = query(
+    collection(db, 'changeRequests'),
+    where('requestingUserId', '==', userId),
+    where('status', '==', ChangeRequestStatus.APROBADO_GERENTE),
+    where('requestingUserNotified', '==', false)
+  );
+  return onSnapshot(q, (snapshot) => {
+    const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as ChangeRequest);
+    callback(requests);
+  });
 };
 
 // Listener for change requests pending manager action
@@ -613,13 +641,26 @@ export const upsertShiftReport = (
   data: Partial<Omit<ShiftReport, 'id' | 'lastUpdated'>>
 ): Promise<void> => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
+  if (!shiftId) throw new Error("Se requiere un shiftId para crear/actualizar un reporte.");
+
   const reportDocRef = doc(db, FirebaseCollections.SHIFT_REPORTS, shiftId);
-  // Usamos setDoc con 'merge: true'. Esto crea el documento si no existe,
-  // o actualiza los campos si ya existe, sin borrar los otros. ¡Es muy potente!
-  return setDoc(reportDocRef, { 
-    ...data, 
-    lastUpdated: serverTimestamp() 
-  }, { merge: true });
+
+  // --- LÓGICA MEJORADA ---
+  // Creamos un objeto limpio, asegurando que no haya campos undefined
+  const dataToSave = {
+    shiftId: data.shiftId || shiftId,
+    managerId: data.managerId || '',
+    managerName: data.managerName || 'No disponible',
+    templateId: data.templateId || '',
+    shiftTypeName: data.shiftTypeName || 'No especificado',
+    completedTasks: data.completedTasks || {},
+    notes: data.notes || '',
+    lastUpdated: serverTimestamp() // Siempre actualizamos la fecha
+  };
+
+  // Usamos setDoc con 'merge: true'. Esto es más seguro.
+  // Crea el documento si no existe, o actualiza los campos si ya existe.
+  return setDoc(reportDocRef, dataToSave, { merge: true });
 };
 
 // --- Añade esta nueva función al final de firestoreService.ts ---
@@ -687,5 +728,14 @@ export const getJustificationsPage = async (
   const nextLastVisibleDoc = querySnapshot.docs[querySnapshot.docs.length - 1];
 
   return { entries, nextLastVisibleDoc };
+};
+
+
+// Función para marcar la notificación como vista
+export const markChangeRequestAsNotified = async (requestId: string): Promise<void> => {
+  const requestRef = doc(db, 'changeRequests', requestId);
+  await updateDoc(requestRef, {
+    requestingUserNotified: true
+  });
 };
 

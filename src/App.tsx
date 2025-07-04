@@ -1,100 +1,152 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import Modal from './components/common/Modal';
+
+// --- Contextos y Hooks ---
 import { useAuth } from './contexts/AuthContext';
+import { useNotification } from './contexts/NotificationContext';
+
+// --- Servicios de Firebase ---
+import { sendPasswordResetEmail } from 'firebase/auth';
+import { auth } from './services/firebase';
+import { updateUser, onUnreadNotificationsSnapshot, markNotificationAsRead, } from './services/firestoreService';
+
+// --- Componentes ---
 import Login from './components/auth/Login';
 import EmpleadoDashboard from './components/empleado/EmpleadoDashboard';
 import GerenteDashboard from './components/gerente/GerenteDashboard';
 import DuenoDashboard from './components/dueno/DuenoDashboard';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import NotificationContainer from './components/common/NotificationContainer';
-import { UserRole } from './types';
 import Button from './components/common/Button';
-import { sendPasswordResetEmail } from 'firebase/auth'; // Importamos la función de Firebase
-import { auth } from './services/firebase'; // Importamos nuestra instancia de auth
-import { useNotification } from './contexts/NotificationContext';
-import { updateUser } from './services/firestoreService';
 
-// --- Nuevo Componente para Forzar el Reseteo de Contraseña ---
-const ForceResetPassword: React.FC = () => {
-    const { user, logout } = useAuth();
-    const { addNotification } = useNotification();
-    const [emailSent, setEmailSent] = useState(false);
-
-    const handleSendResetEmail = async () => {
-        if (!user || !user.email) return;
-        try {
-            await sendPasswordResetEmail(auth, user.email);
-            setEmailSent(true);
-            addNotification("Correo de restablecimiento enviado. ¡Revisa tu bandeja de entrada!", "success");
-            // Quitamos la marca para que no vuelva a ver esta pantalla la próxima vez
-            await updateUser(user.uid, { passwordResetRequired: false });
-        } catch (error: any) {
-            addNotification(`Error al enviar el correo: ${error.message}`, "error");
-        }
-    };
-
-    return (
-        <div className="flex items-center justify-center min-h-screen bg-gray-100">
-            <div className="p-8 bg-white rounded-xl shadow-lg text-center max-w-md">
-                <img src="/PNG1.png" alt="Logo" className="mx-auto h-20 w-20 mb-4 animate-pulse-fast" />
-                <h1 className="text-2xl font-bold text-amore-charcoal mb-4">¡Bienvenido/a a StaffSync!</h1>
-                {!emailSent ? (
-                    <>
-                        <p className="text-amore-gray mb-6">Por tu seguridad, en tu primer inicio de sesión debes establecer una contraseña personal. Haz clic en el botón para recibir un correo y crear tu nueva contraseña.</p>
-                        <Button onClick={handleSendResetEmail} variant="primary" fullWidth>Restablecer Contraseña Ahora</Button>
-                    </>
-                ) : (
-                    <>
-                        <p className="text-green-600 font-semibold mb-6">¡Correo enviado! Por favor, revisa tu bandeja de entrada (y la carpeta de spam) y sigue las instrucciones. Después de cambiarla, podrás cerrar sesión aquí e iniciar sesión con tu nueva contraseña.</p>
-                        <Button onClick={logout} variant="secondary" fullWidth>Cerrar Sesión</Button>
-                    </>
-                )}
-            </div>
-        </div>
-    );
-};
-
+// --- Tipos de Datos ---
+import { UserRole, Notification } from './types';
 
 const App: React.FC = () => {
   const { user, loading, userData, logout } = useAuth();
+  
+  // --- ESTADO PARA EL MODAL DE NOTIFICACIÓN ---
+  const [modalNotification, setModalNotification] = useState<Notification | null>(null);
 
-  const employeeLevelRoles: UserRole[] = [
-    UserRole.COCINERO, UserRole.AUXILIAR_COCINA, UserRole.LAVALOZA,
-    UserRole.BARTENDER, UserRole.MESERO,
-  ];
+  // --- OYENTE DE NOTIFICACIONES ---
+  useEffect(() => {
+    // Si no hay usuario, no hacemos nada.
+    if (!user) return;
 
-  if (loading) {
-    return <div className="flex items-center justify-center min-h-screen"><LoadingSpinner /></div>;
+    // Escuchamos las notificaciones no leídas del usuario.
+    const unsubscribe = onUnreadNotificationsSnapshot(user.uid, (notifications) => {
+      // Buscamos la primera notificación que requiera confirmación y que no se esté mostrando ya.
+      const firstModalNotification = notifications.find(n => n.requiresConfirmation && n.id !== modalNotification?.id);
+      
+      if (firstModalNotification) {
+        setModalNotification(firstModalNotification); // Si la encontramos, la ponemos en el estado para mostrar el modal.
+      }
+    });
+
+    // Limpiamos el oyente cuando el componente se desmonta o el usuario cambia.
+    return () => unsubscribe();
+  }, [user, modalNotification]);
+
+
+  // --- FUNCIÓN PARA "CONFIRMAR DE ENTERADO" ---
+  const handleAcknowledgeNotification = async () => {
+    if (!modalNotification) return;
+    try {
+      await markNotificationAsRead(modalNotification.id); // La marcamos como leída en la base de datos
+      setModalNotification(null); // Cerramos el modal
+    } catch (error) {
+      console.error("Error al marcar la notificación como leída:", error);
+    }
   }
 
+  // 2. El "portero" principal: si estamos cargando, no mostramos nada más.
+  // Esto es CORRECTO y ya lo tenías.
+  if (loading) {
+    return <div className="flex items-center justify-center min-h-screen"><LoadingSpinner text="Verificando sesión..." /></div>;
+  }
+
+  // 3. Si NO estamos cargando y NO hay usuario, mostramos la pantalla de Login.
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gray-100 text-gray-800 flex flex-col">
+        <NotificationContainer />
+        <Login />
+      </div>
+    );
+  }
+  
+  // 4. Si SÍ hay usuario, pero aún no tenemos sus datos de Firestore (userData),
+  // mostramos una carga específica. Este es un estado intermedio que tu código anterior no manejaba explícitamente.
+  if (!userData) {
+      return (
+        <div className="flex items-center justify-center min-h-screen">
+          <LoadingSpinner text="Cargando perfil de usuario..." />
+        </div>
+      );
+  }
+
+  // 5. Si el usuario debe cambiar su contraseña, le forzamos a hacerlo y no mostramos nada más.
+  if (userData.passwordResetRequired) {
+    return <ForceResetPassword />;
+  }
+
+  // 6. Función limpia para decidir qué Dashboard mostrar según el rol.
+  const renderDashboardByRole = () => {
+    switch (userData.role) {
+      case UserRole.COCINERO:
+      case UserRole.AUXILIAR_COCINA:
+      case UserRole.LAVALOZA:
+      case UserRole.BARTENDER:
+      case UserRole.MESERO:
+        return <EmpleadoDashboard />;
+
+      case UserRole.GERENTE:
+        return <GerenteDashboard />;
+      
+      case UserRole.DUENO:
+        return <DuenoDashboard />;
+
+      default:
+        // Si el usuario no tiene un rol válido, mostramos un error claro.
+        return (
+          <div className="flex flex-col items-center justify-center flex-grow p-4">
+            <h1 className="text-2xl font-bold text-red-600 mb-4">Error de Configuración de Cuenta</h1>
+            <p className="text-center">No se ha podido determinar tu rol en el sistema.</p>
+            <Button onClick={logout} variant="primary" className="mt-4">Cerrar Sesión</Button>
+          </div>
+        );
+    }
+  };
+
+
+
+  // 7. Finalmente, renderizamos el contenedor principal con el dashboard correspondiente.
   return (
     <div className="min-h-screen bg-gray-100 text-gray-800 flex flex-col">
       <NotificationContainer />
-      {!user ? (
-        <Login />
-      ) : (
-        <>
-          {/* --- NUEVA LÓGICA DE INTERCEPCIÓN --- */}
-          {/* Si el usuario está marcado, le mostramos la pantalla de reseteo y nada más */}
-          {user && userData?.passwordResetRequired ? (
-            <ForceResetPassword />
-          ) : (
-            <>
-              {/* Si no, continuamos con la lógica de roles normal */}
-              {userData?.role && employeeLevelRoles.includes(userData.role) && <EmpleadoDashboard />}
-              {userData?.role === UserRole.GERENTE && <GerenteDashboard />}
-              {userData?.role === UserRole.DUENO && <DuenoDashboard />}
-              
-              {(!userData || !userData.role) && user && !userData?.passwordResetRequired && (
-                <div className="flex flex-col items-center justify-center flex-grow p-4">
-                  <h1 className="text-2xl font-bold text-red-600 mb-4">Error de Configuración de Cuenta</h1>
-                  <p className="text-center">No se ha podido determinar tu rol o tu perfil no está completo.</p>
-                  <Button onClick={logout} variant="primary" className="mt-4">Cerrar Sesión</Button>
-                </div>
-              )}
-            </>
-          )}
-        </>
-      )}
+      {renderDashboardByRole()}
+
+      {/* --- MODAL GENÉRICO DE NOTIFICACIONES --- */}
+      {/* Este modal se mostrará encima de cualquier pantalla si hay una notificación que confirmar */}
+      <Modal 
+        isOpen={!!modalNotification} 
+        onClose={handleAcknowledgeNotification} 
+        title={modalNotification?.title || 'Notificación'}
+      >
+        <div className="text-center p-4">
+            <h3 className="text-lg font-medium text-gray-900">{modalNotification?.title}</h3>
+            <div className="mt-2">
+                <p className="text-sm text-gray-600">
+                    {modalNotification?.message}
+                </p>
+            </div>
+            <div className="mt-6">
+                <Button onClick={handleAcknowledgeNotification} variant="primary" fullWidth>
+                    Enterado
+                </Button>
+            </div>
+        </div>
+      </Modal>
     </div>
   );
 };

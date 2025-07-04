@@ -1,27 +1,27 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { ChangeRequest, ChangeRequestStatus, Shift, User, UserRole, ShiftStatus } from '../../types';
 import Button from '../common/Button';
 import LoadingSpinner from '../common/LoadingSpinner';
 import Modal from '../common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { 
-  updateChangeRequest, getShiftsForDay, getAllUsers, getAllUsersByRole, addDoc, collection, serverTimestamp,
-  updateShift, onPendingManagerChangeRequestsSnapshot 
+  updateChangeRequest, 
+  getShiftsForDay, 
+  getAllUsersByRole,
+  updateShift, 
+  onPendingManagerChangeRequestsSnapshot 
 } from '../../services/firestoreService';
-import { findOptimalReplacement } from '../../services/aiService';
 import { logUserAction } from '../../services/historyService';
 import { useAuth } from '../../contexts/AuthContext';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale/es';
-import { DATE_FORMAT_SPA_DATETIME, HISTORY_ACTIONS } from '../../constants';
+import { DATE_FORMAT_SPA_DATETIME, HISTORY_ACTIONS, ROLE_HIERARCHY } from '../../constants';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 
-
-// Objeto para guardar los empleados clasificados
 interface CategorizedEmployees {
-  ideal: User[];
-  available: User[];
+  ideal: User[]; // Mismo Rol
+  alternative: User[]; // Mismo Nivel, Diferente Rol
   unavailable: { user: User; reason: string }[];
 }
 
@@ -31,161 +31,111 @@ const ChangeRequestManagement: React.FC = () => {
 
   const [requests, setRequests] = useState<ChangeRequest[]>([]);
   const [loadingRequests, setLoadingRequests] = useState(true);
+  const [allEmployees, setAllEmployees] = useState<User[]>([]);
   
   const [selectedRequest, setSelectedRequest] = useState<ChangeRequest | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   
-  const [potentialReplacements, setPotentialReplacements] = useState<User[]>([]);
-  const [findingReplacementsLoading, setFindingReplacementsLoading] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false); // For assign/reject actions
   const [categorizedEmployees, setCategorizedEmployees] = useState<CategorizedEmployees | null>(null);
   const [isLoadingReplacements, setIsLoadingReplacements] = useState(false);
-  const [processingId, setProcessingId] = useState<string | null>(null);
-  
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
-    setLoadingRequests(true);
     const unsubscribe = onPendingManagerChangeRequestsSnapshot((fetchedRequests) => {
       setRequests(fetchedRequests);
       setLoadingRequests(false);
     });
+    getAllUsersByRole().then(setAllEmployees).catch(console.error);
     return () => unsubscribe();
   }, []);
 
   const findAndCategorizeReplacements = async (shiftToReplace: Shift) => {
-  setIsLoadingReplacements(true);
-  setCategorizedEmployees(null);
+    setIsLoadingReplacements(true);
+    setCategorizedEmployees(null);
+    try {
+      const allUsers = await getAllUsersByRole();
+      const shiftsForDay = await getShiftsForDay(shiftToReplace.start.toDate());
+      const requestingUser = allUsers.find(u => u.id === shiftToReplace.userId);
+      if (!requestingUser) throw new Error("No se pudo encontrar al empleado original.");
 
-  try {
-    const allUsers = await getAllUsersByRole();
-    const shiftsForDay = await getShiftsForDay(shiftToReplace.start.toDate());
+      const requestingUserRole = requestingUser.role;
 
-    // --- LÓGICA MEJORADA ---
-    // 1. Encontramos al empleado que originalmente tiene el turno para saber su rol.
-    const requestingUser = allUsers.find(u => u.id === shiftToReplace.userId);
+      const hierarchyLevel = (Object.keys(ROLE_HIERARCHY) as Array<keyof typeof ROLE_HIERARCHY>)
+        .find(level => ROLE_HIERARCHY[level].includes(requestingUserRole));
 
-    if (!requestingUser) {
-      addNotification("No se pudo encontrar al empleado original del turno.", "error");
-      setIsLoadingReplacements(false);
-      return;
-    }
-    const idealRole = requestingUser.role;
-    // --- FIN LÓGICA MEJORADA ---
-
-    const ideal: User[] = [];
-    const available: User[] = [];
-    const unavailable: { user: User; reason: string }[] = [];
-
-    for (const user of allUsers) {
-      // Omitimos al mismo empleado que solicita el cambio
-      if (user.id === requestingUser.id) continue;
-
-      // Verificamos si tiene un turno que choque
-      const conflictingShift = shiftsForDay.find(s => s.userId === user.id);
-      
-      if (conflictingShift) {
-        unavailable.push({ user, reason: `Ya trabaja de ${format(conflictingShift.start.toDate(), 'HH:mm')} a ${format(conflictingShift.end.toDate(), 'HH:mm')}` });
-      } else {
-        // --- LÓGICA MEJORADA ---
-        // 2. Comparamos el rol de cada empleado con el rol del empleado original.
-        if (user.role === idealRole) {
-          ideal.push(user);
-        } else {
-          available.push(user);
-        }
-        // --- FIN LÓGICA MEJORADA ---
+      if (!hierarchyLevel) {
+        setCategorizedEmployees({ ideal: [], alternative: [], unavailable: [] });
+        setIsLoadingReplacements(false);
+        return;
       }
+      
+      const validReplacementRoles = ROLE_HIERARCHY[hierarchyLevel];
+      const ideal: User[] = [];
+      const alternative: User[] = [];
+      const unavailable: { user: User; reason: string }[] = [];
+
+      for (const user of allUsers) {
+        if (user.id === requestingUser.id || user.role === UserRole.DUENO) continue;
+        
+        const conflictingShift = shiftsForDay.find(s => s.userId === user.id);
+        
+        if (conflictingShift) {
+          unavailable.push({ user, reason: `Ya trabaja de ${format(conflictingShift.start.toDate(), 'HH:mm')} a ${format(conflictingShift.end.toDate(), 'HH:mm')}` });
+        } else if (validReplacementRoles.includes(user.role)) {
+          // Si no tiene conflicto Y su rol es del mismo nivel...
+          if (user.role === requestingUserRole) {
+            ideal.push(user); // ...si es el mismo rol, es ideal.
+          } else {
+            alternative.push(user); // ...si es otro rol del mismo nivel, es alternativo.
+          }
+        } else {
+          unavailable.push({ user, reason: "Rol no compatible" });
+        }
+      }
+      setCategorizedEmployees({ ideal, alternative, unavailable });
+    } catch (error: any) {
+      addNotification(`Error al buscar reemplazos: ${error.message}`, 'error');
+    } finally {
+      setIsLoadingReplacements(false);
     }
-
-    setCategorizedEmployees({ ideal, available, unavailable });
-
-  } catch (error: any) {
-    addNotification(`Error al buscar reemplazos: ${error.message}`, 'error');
-    console.error("Error categorizando empleados:", error);
-  } finally {
-    setIsLoadingReplacements(false);
-  }
-};
+  };
 
   const handleOpenRequestModal = (request: ChangeRequest) => {
     if (!request.originalShift) {
-        addNotification("Datos del turno original no disponibles.", "error");
-        return;
+      addNotification("Datos del turno original no disponibles.", "error");
+      return;
     }
     setSelectedRequest(request);
-    setPotentialReplacements([]); // Reset previous suggestions
     setIsModalOpen(true);
     findAndCategorizeReplacements(request.originalShift);
   };
 
-  const handleFindReplacementWithAI = async () => {
-    if (!selectedRequest || !selectedRequest.originalShift) {
-      addNotification("No hay solicitud seleccionada o faltan datos del turno original.", "error");
-      return;
-    }
-    setFindingReplacementsLoading(true);
-    setPotentialReplacements([]);
-    try {
-      const foundUsers = await findOptimalReplacement(selectedRequest.originalShift);
-      setPotentialReplacements(foundUsers);
-      if (foundUsers.length === 0) {
-        addNotification("IA no encontro reemplazos optimos esta vez (simulado).", "info");
-      } else {
-        addNotification(`IA sugirio ${foundUsers.length} reemplazo(s) (simulado).`, "success");
-      }
-    } catch (error: any) {
-      addNotification(`Error al buscar reemplazos con IA: ${error.message}`, "error");
-      console.error("AI replacement error:", error);
-    } finally {
-      setFindingReplacementsLoading(false);
-    }
-  };
-
   const handleAssignReplacement = async (proposedUser: User) => {
-    if (!selectedRequest || !proposedUser || !userData) {
-        addNotification("Datos invalidos para proponer reemplazo.", "error");
-        return;
-    }
+    if (!selectedRequest || !proposedUser || !userData) return;
     setActionLoading(true);
     try {
       await updateChangeRequest(selectedRequest.id, {
         proposedUserId: proposedUser.id,
         proposedUserName: proposedUser.name,
-        status: ChangeRequestStatus.PENDIENTE_ACEPTACION_EMPLEADO,
-        managerNotes: "Propuesto por gerente via IA (simulado) o seleccion manual.",
+        status: ChangeRequestStatus.PROPUESTO_EMPLEADO, // Cambiamos el estado a PROPUESTO_EMPLEADO
+        managerNotes: "Propuesto por selección manual del gerente.",
       });
       await updateShift(selectedRequest.originalShiftId, { status: ShiftStatus.CAMBIO_EN_PROCESO });
-
       await logUserAction(userData.id, userData.name, HISTORY_ACTIONS.PROPOSE_SHIFT_COVERAGE, { 
         changeRequestId: selectedRequest.id, 
         originalShiftId: selectedRequest.originalShiftId,
         requestingUserId: selectedRequest.requestingUserId,
         proposedUserId: proposedUser.id 
       });
-
-      // --- INICIO DE LA LÓGICA AÑADIDA ---
-      // 1. CREAR NOTIFICACIÓN para el empleado al que se le propone el turno
       await addDoc(collection(db, 'notifications'), {
-        userId: proposedUser.id, // Notificación para el empleado propuesto
+        userId: proposedUser.id,
         title: "Propuesta de Cobertura de Turno",
         message: `${selectedRequest.requestingUserName} necesita que cubras su turno. Por favor, revisa tus propuestas pendientes.`,
         isRead: false,
         createdAt: serverTimestamp(),
         type: 'change_request_proposal'
       });
-
-      // 2. (Opcional) Notificar al empleado original que ya se está gestionando
-      await addDoc(collection(db, 'notifications'), {
-        userId: selectedRequest.requestingUserId,
-        title: "Solicitud de Cambio en Proceso",
-        message: `Hemos propuesto a ${proposedUser.name} que cubra tu turno. Te notificaremos su respuesta.`,
-        isRead: false,
-        createdAt: serverTimestamp(),
-        type: 'change_request_update'
-      });
-      // --- FIN DE LA LÓGICA AÑADIDA ---
-
-      addNotification(`Reemplazo propuesto a ${proposedUser.name}. Esperando aceptacion.`, 'success');
+      addNotification(`Reemplazo propuesto a ${proposedUser.name}. Esperando aceptación.`, 'success');
       setIsModalOpen(false);
       setSelectedRequest(null); 
     } catch (error: any) {
@@ -196,10 +146,7 @@ const ChangeRequestManagement: React.FC = () => {
   };
   
   const handleRejectRequest = async (reason: string = "No aprobado por gerencia.") => {
-    if (!selectedRequest || !userData) {
-      addNotification("No hay solicitud seleccionada para rechazar.", "error");
-      return;
-    }
+    if (!selectedRequest || !userData) return;
     setActionLoading(true);
     try {
       await updateChangeRequest(selectedRequest.id, { 
@@ -208,25 +155,15 @@ const ChangeRequestManagement: React.FC = () => {
           resolutionNotes: reason,
       });
       await updateShift(selectedRequest.originalShiftId, { status: ShiftStatus.CONFIRMADO });
-      await logUserAction(userData.id, userData.name, HISTORY_ACTIONS.REJECT_SHIFT_CHANGE_REQUEST, { 
-          changeRequestId: selectedRequest.id,
-          originalShiftId: selectedRequest.originalShiftId,
-          requestingUserId: selectedRequest.requestingUserId,
-          reason
-      });
-
-      // --- INICIO DE LA LÓGICA AÑADIDA ---
-      // CREAR NOTIFICACIÓN para el empleado original informando del rechazo
+      await logUserAction(userData.id, userData.name, HISTORY_ACTIONS.REJECT_SHIFT_CHANGE_REQUEST, { /*...*/ });
       await addDoc(collection(db, 'notifications'), {
-        userId: selectedRequest.requestingUserId, // Notificación para el empleado que pidió el cambio
+        userId: selectedRequest.requestingUserId,
         title: "Solicitud de Cambio Rechazada",
-        message: `Tu solicitud para cambiar tu turno ha sido rechazada por el gerente. Notas: "${reason}"`,
+        message: `Tu solicitud para cambiar tu turno ha sido rechazada. Notas: "${reason}"`,
         isRead: false,
         createdAt: serverTimestamp(),
         type: 'change_request_resolution'
       });
-      // --- FIN DE LA LÓGICA AÑADIDA ---
-
       addNotification(`Solicitud de ${selectedRequest.requestingUserName} rechazada.`, 'info');
       setIsModalOpen(false);
       setSelectedRequest(null);
@@ -241,24 +178,23 @@ const ChangeRequestManagement: React.FC = () => {
 
   return (
     <div className="p-2 md:p-4 animate-fadeIn">
-      <h2 className="text-2xl font-semibold text-gray-800 mb-6">Gestion de Solicitudes de Cambio</h2>
+      <h2 className="text-2xl font-semibold text-gray-800 mb-6">Gestión de Solicitudes de Cambio</h2>
       {requests.length === 0 ? (
-        <p className="text-gray-600 italic text-center py-8">No hay solicitudes de cambio pendientes de revision por el gerente.</p>
+        <p className="text-gray-600 italic text-center py-8">No hay solicitudes pendientes.</p>
       ) : (
         <div className="space-y-4">
           {requests.map(req => (
             <div key={req.id} className="bg-white p-4 rounded-lg shadow-md border-l-4 border-yellow-500 hover:shadow-lg transition-shadow">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center">
                 <div>
-                  <p className="font-semibold text-gray-700">Solicitante: <span className="font-normal">{req.requestingUserName || req.requestingUserId}</span></p>
+                  <p className="font-semibold text-gray-700">Solicitante: <span className="font-normal">{req.requestingUserName}</span></p>
                   <p className="text-sm text-gray-600">
-                    Turno Original: {req.originalShift?.shiftType?.name || 'ID: ' + req.originalShiftId} 
+                    Turno: {req.originalShift?.shiftTypeName || 'ID: ' + req.originalShiftId} 
                     {req.originalShift?.start && ` (${format(req.originalShift.start.toDate(), DATE_FORMAT_SPA_DATETIME, { locale: es })})`}
                   </p>
-                  <p className="text-xs text-gray-500">Solicitado: {req.requestedAt ? format(req.requestedAt.toDate(), DATE_FORMAT_SPA_DATETIME, { locale: es }) : 'N/A'}</p>
                 </div>
-                <Button onClick={() => handleOpenRequestModal(req)} size="sm" className="mt-2 sm:mt-0" icon={<i className="fas fa-search"></i>}>
-                  Revisar
+                <Button onClick={() => handleOpenRequestModal(req)} size="sm" className="mt-2 sm:mt-0" icon={<i className="fas fa-search mr-2"></i>}>
+                  Revisar y Buscar Reemplazo
                 </Button>
               </div>
             </div>
@@ -275,35 +211,33 @@ const ChangeRequestManagement: React.FC = () => {
         >
           <div className="space-y-4">
             <p>Buscando reemplazo para <strong>{selectedRequest.requestingUserName}</strong> en el turno de <strong>{selectedRequest.originalShift.shiftTypeName}</strong>.</p>
-            {isLoadingReplacements && <LoadingSpinner text="Analizando disponibilidad..." />}
+            {isLoadingReplacements && <LoadingSpinner text="Analizando disponibilidad y roles..." />}
             
             {categorizedEmployees && (
               <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                
-                <h3 className="text-lg font-semibold text-green-700 border-b pb-2">Reemplazos Ideales (Mismo Rol)</h3>
+                <h3 className="text-lg font-semibold text-green-700 border-b pb-2">Reemplazos Disponibles (Mismo Nivel Jerárquico)</h3>
                 {categorizedEmployees.ideal.length > 0 ? categorizedEmployees.ideal.map(user => (
                   <div key={user.id} className="flex justify-between items-center p-2 bg-green-50 rounded">
-                    <span>{user.name}</span>
+                    <span>{user.name} <span className="text-xs text-gray-500 capitalize">({user.role})</span></span>
                     <Button size="sm" variant="success" onClick={() => handleAssignReplacement(user)} disabled={actionLoading}>Proponer</Button>
                   </div>
-                )) : <p className="text-sm text-gray-500 italic">No hay empleados disponibles con este rol.</p>}
+                )) : <p className="text-sm text-gray-500 italic">No hay empleados disponibles con un rol compatible.</p>}
 
-                <h3 className="text-lg font-semibold text-blue-700 border-b pb-2 mt-4">Otras Opciones Disponibles</h3>
-                {categorizedEmployees.available.length > 0 ? categorizedEmployees.available.map(user => (
+                <h3 className="text-lg font-semibold text-blue-700 border-b pb-2 mt-4">Alternativas (Mismo Nivel)</h3>
+                {categorizedEmployees.alternative.length > 0 ? categorizedEmployees.alternative.map(user => (
                   <div key={user.id} className="flex justify-between items-center p-2 bg-blue-50 rounded">
-                    <span>{user.name} ({user.role})</span>
+                    <span>{user.name} <span className="text-xs text-gray-500 capitalize">({user.role})</span></span>
                     <Button size="sm" variant="primary" onClick={() => handleAssignReplacement(user)} disabled={actionLoading}>Proponer</Button>
                   </div>
-                )) : <p className="text-sm text-gray-500 italic">No hay otros empleados disponibles.</p>}
+                )) : <p className="text-sm text-gray-500 italic">No hay otras opciones compatibles.</p>}
 
                 <h3 className="text-lg font-semibold text-red-700 border-b pb-2 mt-4">No Disponibles</h3>
                 {categorizedEmployees.unavailable.length > 0 ? categorizedEmployees.unavailable.map(({user, reason}) => (
-                  <div key={user.id} className="flex justify-between items-center p-2 bg-red-50 rounded opacity-70">
-                    <span className="text-red-800 line-through">{user.name}</span>
+                  <div key={user.id} className="flex justify-between items-center p-2 bg-red-50 rounded opacity-80">
+                    <span className="text-gray-800 line-through">{user.name}</span>
                     <span className="text-xs text-red-600">{reason}</span>
                   </div>
-                )) : <p className="text-sm text-gray-500 italic">Todos los demás empleados están disponibles.</p>}
-
+                )) : <p className="text-sm text-gray-500 italic">El resto de los empleados no tienen conflictos.</p>}
               </div>
             )}
             <div className="flex justify-end pt-4 border-t mt-4">

@@ -213,7 +213,18 @@ const UserManagementView: React.FC = () => {
                   ) : (
                     <>
                       <Button onClick={() => handleOpenUserModal(user)} size="sm" variant="light" icon={<i className="fas fa-edit"></i>} className="mr-2">Editar</Button>
-                      <Button onClick={() => handleDeactivateUser(user)} size="sm" variant="danger" icon={<i className="fas fa-user-slash"></i>}>Desactivar</Button>
+                      <Button 
+  onClick={() => handleDeactivateUser(user)} 
+  size="sm" 
+  variant="danger" 
+  icon={<i className="fas fa-user-slash"></i>}
+  // --- INICIO DE LA LÓGICA AÑADIDA ---
+  disabled={currentAdmin?.id === user.id}
+  title={currentAdmin?.id === user.id ? "No puedes desactivar tu propia cuenta" : "Desactivar usuario"}
+  // --- FIN DE LA LÓGICA AÑADIDA ---
+>
+  Desactivar
+</Button>
                     </>
                   )}
                 </td>

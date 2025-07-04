@@ -57,8 +57,14 @@ const ShiftReportsView: React.FC = () => {
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <ul className="divide-y divide-gray-200">
           {reports.map(report => {
-            const completedCount = Object.values(report.completedTasks || {}).filter(Boolean).length;
-            const totalTasks = Object.keys(report.completedTasks || {}).length; // Ojo, esto puede no ser lo ideal si la plantilla cambia
+            const hasSnapshot = report.checklistSnapshot && report.checklistSnapshot.length > 0;
+  const completedCount = hasSnapshot 
+    ? report.checklistSnapshot.filter(item => item.done).length
+    : Object.values(report.completedTasks || {}).filter(Boolean).length;
+  
+  const totalTasks = hasSnapshot 
+    ? report.checklistSnapshot.length 
+    : Object.keys(report.completedTasks || {}).length;
             return (
               <li key={report.id} className="p-4 hover:bg-gray-50 flex items-center justify-between flex-wrap gap-2">
                 <div>
@@ -106,16 +112,37 @@ const ShiftReportsView: React.FC = () => {
                 <p className="text-sm text-amore-gray">Fecha: {format(selectedReport.lastUpdated.toDate(), DATE_FORMAT_SPA_DATETIME, { locale: es })}</p>
             </div>
             <div className="border-t pt-4">
-                <h4 className="font-semibold text-amore-charcoal mb-2">Checklist</h4>
-                <div className="space-y-2">
-                    {Object.entries(selectedReport.completedTasks || {}).map(([task, isDone]) => (
-                        <div key={task} className="flex items-center">
-                            <input type="checkbox" checked={isDone} readOnly className="h-4 w-4 rounded text-amore-red cursor-not-allowed"/>
-                            <label className={`ml-2 text-sm ${isDone ? 'text-gray-500 line-through' : 'text-amore-charcoal'}`}>{task}</label>
-                        </div>
-                    ))}
-                </div>
-            </div>
+  <h4 className="font-semibold text-amore-charcoal mb-2">Checklist</h4>
+  <div className="space-y-2">
+    {/* --- LÓGICA CORREGIDA --- */}
+    {/* Primero, revisamos si el reporte tiene el nuevo 'checklistSnapshot' */}
+    {selectedReport.checklistSnapshot ? (
+      // Si es un reporte NUEVO, iteramos sobre el snapshot
+      selectedReport.checklistSnapshot.map((item, index) => (
+        <div key={index} className="flex items-center">
+          <input type="checkbox" checked={item.done} readOnly disabled className="h-4 w-4 rounded cursor-not-allowed"/>
+          <label className={`ml-2 text-sm ${item.done ? 'text-gray-500 line-through' : 'text-amore-charcoal'}`}>
+            {item.task}
+          </label>
+        </div>
+      ))
+    ) : (
+      // Si es un reporte ANTIGUO, mantenemos la lógica vieja para compatibilidad
+      <>
+        <p className="p-2 text-xs bg-yellow-100 text-yellow-800 rounded-md mb-3 italic">
+          Aviso: Este es un reporte antiguo y podría mostrar tareas desactualizadas.
+        </p>
+        {Object.entries(selectedReport.completedTasks || {}).map(([task, isDone]) => (
+          <div key={task} className="flex items-center">
+            <input type="checkbox" checked={isDone} readOnly disabled className="h-4 w-4 rounded cursor-not-allowed"/>
+            <label className={`ml-2 text-sm ${isDone ? 'text-gray-500 line-through' : 'text-amore-charcoal'}`}>{task}</label>
+          </div>
+        ))}
+      </>
+    )}
+    {/* ------------------------- */}
+  </div>
+</div>
             {selectedReport.notes && (
                 <div className="border-t pt-4">
                     <h4 className="font-semibold text-amore-charcoal mb-2">Notas del Turno</h4>

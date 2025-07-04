@@ -46,7 +46,7 @@ export interface ProcedureItem {
 export interface ShiftType {
   id: string;
   name: string;
-  checklist: ChecklistItem[]; // Template for checklist
+  checklistTemplateId?: string; // Template for checklist
   procedures: ProcedureItem[];
 }
 
@@ -84,10 +84,12 @@ export type PartialShiftForTemplate = Partial<Omit<Shift, 'id' | 'userId' | 'use
 
 
 export enum ChangeRequestStatus {
-  PENDIENTE_GERENTE = 'pendiente_gerente',
-  PENDIENTE_ACEPTACION_EMPLEADO = 'pendiente_aceptacion_empleado',
-  APROBADO = 'aprobado',
-  RECHAZADO = 'rechazado',
+  PENDIENTE_GERENTE = 'pendiente_gerente',         // El gerente debe proponer un sustituto
+  PROPUESTO_EMPLEADO = 'propuesto_empleado',       // <-- NUEVO Y MEJORADO: Se propuso a un empleado y está pendiente de su respuesta
+  ACEPTADO_EMPLEADO = 'aceptado_empleado',         // <-- NUEVO Y MEJORADO: El empleado aceptó, ahora el gerente debe confirmar
+  APROBADO_GERENTE = 'aprobado_gerente',           // <-- NUEVO Y MEJORADO: El gerente dio la aprobación final
+  RECHAZADO_EMPLEADO = 'rechazado_empleado',       // <-- NUEVO Y MEJORADO: El empleado propuesto rechazó la cobertura
+  RECHAZADO_GERENTE = 'rechazado_gerente',         // <-- NUEVO Y MEJORADO: El gerente rechazó el cambio
 }
 
 export interface ChangeRequest {
@@ -161,26 +163,31 @@ export interface ChecklistTemplate {
 
 export type Notification = {
   id: string;
-  userId: string;
-  title: string;
+  userId: string;       // ID del usuario que RECIBIRÁ la notificación.
+  title: string;        // Título corto. Ej: "Propuesta Aceptada"
   message: string;
   isRead: boolean;
   createdAt: any; // Se guardará como Timestamp, pero puede leerse como objeto
   type: string;
-  relatedDocId?: string;
+  relatedDocId?: string;      // Mensaje detallado. Ej: "Juan Pérez ha aceptado cubrir tu turno."
+  link?: string;         // (Opcional) Un enlace para llevar al usuario a la página relevante.
+  isRead: boolean;      // Para saber si el usuario ya la vio.
+  createdAt: Timestamp;   // Para ordenarlas cronológicamente.
+  type: 'info' | 'success' | 'warning' | 'error'; // Para darle un estilo visual.
 };
 
 export interface ShiftReport {
-  id: string; // Será el mismo que el ID del Turno (Shift)
+  id: string;
   shiftId: string;
   managerId: string;
   managerName?: string;
   templateId: string;
   shiftTypeName?: string;
-  // Guardaremos un mapa de tareas y su estado (completada o no)
-  completedTasks: {
-    [task: string]: boolean;
-  };
   notes?: string;
   lastUpdated: Timestamp;
+  // Este es el cambio clave:
+  checklistSnapshot: {
+    task: string;
+    done: boolean;
+  }[];
 }
