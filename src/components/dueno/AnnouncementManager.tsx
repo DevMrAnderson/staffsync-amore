@@ -5,8 +5,8 @@ import { createAnnouncement, getAllUsersByRole } from '../../services/firestoreS
 import Button from '../common/Button';
 import Modal from '../common/Modal';
 import { httpsCallable, functions } from 'firebase/functions';
-import { functions } from '@/src/services/firebase';
-import { UserRole, User } from '@/src/types';
+import { functions } from '../../services/firebase';
+import { UserRole, User } from '../../types';
 import { useMemo } from 'react';
 
 const AnnouncementManager: React.FC = () => {
