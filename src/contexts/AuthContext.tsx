@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, Unsubscribe } from 'firebase/firestore';
 import { auth, db } from '../services/firebase';
 import { User as AppUser } from '../types';
@@ -22,35 +21,55 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   useEffect(() => {
     const auth = getAuth();
-    
-    // onAuthStateChanged es la forma correcta y en tiempo real de saber el estado del usuario.
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        // Si hay un usuario, buscamos sus datos en Firestore INMEDIATAMENTE.
-        const userDocRef = doc(db, FirebaseCollections.USERS, firebaseUser.uid);
-        const userDoc = await getDoc(userDocRef);
+    let userDocumentListener: Unsubscribe = () => {}; // Variable para guardar la función de limpieza del oyente
 
-        setUser(firebaseUser); // Guardamos el usuario de Firebase Auth
+    // El oyente principal de Auth no cambia
+    const authStateListener = onAuthStateChanged(auth, async (firebaseUser) => {
+      
+      // Si hay un cambio de usuario, siempre "apagamos" el oyente anterior para evitar fugas de memoria
+      userDocumentListener();
+
+      if (firebaseUser) {
+        const userDocRef = doc(db, FirebaseCollections.USERS, firebaseUser.uid);
         
-        if (userDoc.exists()) {
-          setUserData({ id: userDoc.id, ...userDoc.data() } as AppUser); // Guardamos los datos de Firestore
-        } else {
-          console.warn("No se encontró documento de usuario para UID:", firebaseUser.uid);
-          setUserData(null);
-        }
+        // --- NUEVO OYENTE EN TIEMPO REAL ---
+        // Nos suscribimos a los cambios del documento del usuario
+        userDocumentListener = onSnapshot(userDocRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const userDataFromDb = { id: docSnap.id, ...docSnap.data() } as AppUser;
+
+            // ¡LA VERIFICACIÓN INSTANTÁNEA!
+            // Si en algún momento el estado del usuario cambia a 'inactive', lo sacamos.
+            if (userDataFromDb.status === 'inactive') {
+              console.warn("La cuenta ha sido desactivada por un administrador. Forzando cierre de sesión.");
+              auth.signOut(); // Forzamos el logout directamente
+              return; 
+            }
+
+            // Si todo está en orden, actualizamos los datos y el usuario
+            setUser(firebaseUser);
+            setUserData(userDataFromDb);
+          } else {
+            console.error("No se encontró el documento de usuario. Forzando cierre de sesión.");
+            auth.signOut();
+          }
+          setLoading(false);
+        });
+
       } else {
-        // Si no hay usuario, limpiamos ambos estados.
+        // No hay usuario, limpiamos todo
         setUser(null);
         setUserData(null);
+        setLoading(false);
       }
-      
-      // La clave: Solo dejamos de cargar DESPUÉS de que toda la lógica ha terminado.
-      setLoading(false);
     });
 
-    // Esta función se ejecuta cuando el componente se desmonta para evitar fugas de memoria.
-    return () => unsubscribe();
-  }, []); // El array vacío asegura que esto se ejecute solo una vez.
+    // La función de limpieza principal que se ejecuta al final
+    return () => {
+      authStateListener(); // Apaga el oyente de auth
+      userDocumentListener(); // Apaga el oyente del documento
+    };
+  }, []); // El array vacío asegura que esto se configure una sola vez al inicio de la app
 
   const logout = async () => {
     try {

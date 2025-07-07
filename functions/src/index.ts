@@ -322,16 +322,22 @@ export const onUserStatusChange = onDocumentUpdated({ region: "us-east1", docume
 
   const beforeData = event.data.before.data() as User;
   const afterData = event.data.after.data() as User;
-
-  // Nos interesa solo el cambio de 'active' a 'inactive'
-  if (beforeData.status !== 'active' || afterData.status !== 'inactive') {
-    return; // No es el cambio que nos interesa, no hacemos nada.
-  }
-  
   const userId = event.params.userId;
-  logger.info(`Detectada desactivación de ${afterData.name} (ID: ${userId}). Buscando turnos futuros...`);
-  
-  try {
+
+  // --- LÓGICA PARA CUANDO UN USUARIO ES DESACTIVADO ---
+  if (beforeData.status === 'active' && afterData.status === 'inactive') {
+    logger.info(`Detectada DESACTIVACIÓN de ${afterData.name} (ID: ${userId}).`);
+    
+    try {
+      // --- NUEVA LÓGICA DE SEGURIDAD ---
+      // 1. Desactivamos al usuario en Firebase Authentication para prevenir futuros logins.
+      await admin.auth().updateUser(userId, { disabled: true });
+      logger.info(`Usuario ${userId} DESACTIVADO en Firebase Auth.`);
+      
+      // 2. Revocamos todos sus tokens de sesión para forzar el cierre de sesión en cualquier dispositivo.
+      await admin.auth().revokeRefreshTokens(userId);
+      logger.info(`Tokens de sesión revocados para ${userId}.`);
+      // --- FIN DE LA LÓGICA DE SEGURIDAD ---
     const shiftsRef = db.collection("shifts");
     const now = admin.firestore.Timestamp.now();
 
@@ -355,7 +361,7 @@ export const onUserStatusChange = onDocumentUpdated({ region: "us-east1", docume
         status: ShiftStatus.PENDIENTE,
         notes: `Puesto por cubrir (antes de ${afterData.name})`,
       });
-      logger.info(`Turno ${doc.id} de ${afterData.name} ahora está PENDIENTE.`);
+      logger.info(`${futureShiftsSnapshot.size} turnos de ${afterData.name} marcados como pendientes.`);
     });
     
     await batch.commit();
@@ -392,7 +398,20 @@ export const onUserStatusChange = onDocumentUpdated({ region: "us-east1", docume
   } catch (error) {
     logger.error(`Error al procesar la desactivación de ${afterData.name}:`, error);
   }
-});
+}
+
+// --- LÓGICA PARA CUANDO UN USUARIO ES REACTIVADO ---
+  else if (beforeData.status === 'inactive' && afterData.status === 'active') {
+    logger.info(`Detectada REACTIVACIÓN de ${afterData.name} (ID: ${userId}).`);
+    try {
+      // Habilitamos al usuario en Firebase Authentication para que pueda volver a iniciar sesión.
+      await admin.auth().updateUser(userId, { disabled: false });
+      logger.info(`Usuario ${userId} HABILITADO en Firebase Auth.`);
+    } catch (error) {
+      logger.error(`Error al reactivar usuario en Auth:`, error);
+    }
+  }
+}); 
 
 
 // Esta función se activa cada vez que un 'justification' se actualiza

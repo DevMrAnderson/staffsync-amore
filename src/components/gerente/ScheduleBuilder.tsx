@@ -88,9 +88,13 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps & { onShiftClick?: (shift: 
     const fetchRequiredData = async () => {
       setIsLoading(true);
       try {
-        const [templates, users] = await Promise.all([getShiftTemplates(), getAllUsersByRole()]);
-        setShiftTemplates(templates);
-        setEmployees(users);
+        const [templates, allUsers] = await Promise.all([getShiftTemplates(), getAllUsersByRole()]);
+
+// Filtramos aquí, en el frontend, solo los activos
+const activeEmployees = allUsers.filter(user => user.status !== 'inactive');
+
+setShiftTemplates(templates);
+setEmployees(activeEmployees); // Guardamos solo los activos en el estado de este componente
       } catch (error: any) { addNotification(`Error cargando datos esenciales: ${error.message}`, "error"); } 
       finally { setIsLoading(false); }
     };

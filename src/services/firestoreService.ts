@@ -326,9 +326,12 @@ export const deleteDocument = async (collectionName: string, id: string): Promis
 
 // --- Specific User functions ---
 export const getUser = (id: string): Promise<User | null> => getDocument<User>(FirebaseCollections.USERS, id);
+
 export const getAllUsersByRole = (role?: UserRole): Promise<User[]> => {
   // Empezamos la consulta filtrando SIEMPRE por status 'active'
-  let q = query(collection(db, FirebaseCollections.USERS));
+  let q = query(
+    collection(db, FirebaseCollections.USERS),
+  );
 
   if (role) {
     q = query(q, where('role', '==', role));
