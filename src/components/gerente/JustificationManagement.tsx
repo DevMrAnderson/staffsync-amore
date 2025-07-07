@@ -13,6 +13,12 @@ import { DocumentData, QueryDocumentSnapshot } from 'firebase/firestore';
 import { useAuth } from '../../contexts/AuthContext';
 import { logUserAction } from '../../services/historyService';
 
+// Interfaz para el estado de nuestro modal de confirmación
+interface ConfirmActionState {
+  action: 'approve' | 'reject';
+  justification: Justification;
+}
+
 const ITEMS_PER_PAGE = 15;
 
 const JustificationManagement: React.FC = () => {
@@ -34,6 +40,7 @@ const JustificationManagement: React.FC = () => {
   const [selectedJustification, setSelectedJustification] = useState<Justification | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<ConfirmActionState | null>(null);
 
   const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setFilters(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -80,32 +87,43 @@ const JustificationManagement: React.FC = () => {
     setIsDetailModalOpen(true);
   };
 
-  const handleProcessJustification = async (approved: boolean) => {
-    if (!selectedJustification || !userData) return;
+  // Esta función se ejecuta cuando el gerente hace clic en los botones de "Aprobar" o "Rechazar"
+  const handleOpenConfirmModal = (justification: Justification, action: 'approve' | 'reject') => {
+    setConfirmAction({ justification, action });
+  };
 
+  // Esta función se ejecuta SÓLO cuando se confirma la acción en el modal
+  const executeJustificationProcessing = async () => {
+    if (!confirmAction || !userData) return;
+
+    const { action, justification } = confirmAction;
+    
+    setConfirmAction(null); // Cerramos el modal inmediatamente
+    setIsDetailModalOpen(false);
+    
     setIsProcessing(true);
-    const newStatus = approved ? JustificationStatus.APROBADO : JustificationStatus.RECHAZADO;
-    const action = approved ? HISTORY_ACTIONS.APPROVE_JUSTIFICATION : HISTORY_ACTIONS.REJECT_JUSTIFICATION;
-    const newShiftStatus = approved ? ShiftStatus.AUSENCIA_JUSTIFICADA : ShiftStatus.FALTA_INJUSTIFICADA;
+
+    const newStatus = action === 'approve' ? JustificationStatus.APROBADO : JustificationStatus.RECHAZADO;
+    const historyAction = action === 'approve' ? HISTORY_ACTIONS.APPROVE_JUSTIFICATION : HISTORY_ACTIONS.REJECT_JUSTIFICATION;
+    const newShiftStatus = action === 'approve' ? ShiftStatus.AUSENCIA_JUSTIFICADA : ShiftStatus.FALTA_INJUSTIFICADA;
 
     try {
-      await updateJustification(selectedJustification.id, {
+      await updateJustification(justification.id, {
         status: newStatus,
         reviewedBy: userData.id,
         reviewedByName: userData.name,
       });
 
-      if (selectedJustification.shiftId) {
-        await updateShift(selectedJustification.shiftId, { status: newShiftStatus });
-      }
+      if (action === 'approve' && justification.shiftId) {
+      await updateShift(justification.shiftId, { status: ShiftStatus.AUSENCIA_JUSTIFICADA });
+    }
 
-      await logUserAction(userData.id, userData.name, action, { justificationId: selectedJustification.id });
-      addNotification(`Justificante ${approved ? 'aprobado' : 'rechazado'} con éxito.`, 'success');
+      await logUserAction(userData.id, userData.name, historyAction, { justificationId: justification.id });
+      addNotification(`Justificante ${action === 'approve' ? 'aprobado' : 'rechazado'} con éxito.`, 'success');
       
-      setIsDetailModalOpen(false);
-      fetchJustifications(); // Recargamos la lista para ver los cambios
+      fetchJustifications();
     } catch (error: any) {
-      addNotification(`Error al procesar el justificante: ${error.message}`, 'error');
+      addNotification(`Error al procesar: ${error.message}`, 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -184,12 +202,16 @@ const JustificationManagement: React.FC = () => {
           title="Revisar Justificante"
           size="lg"
           footer={
-            <div className="flex justify-end gap-2">
-              <Button variant="light" onClick={() => setIsDetailModalOpen(false)} disabled={isProcessing}>Cerrar</Button>
-              <Button variant="danger" onClick={() => handleProcessJustification(false)} isLoading={isProcessing} disabled={selectedJustification.status !== JustificationStatus.PENDIENTE || isProcessing}>Rechazar</Button>
-              <Button variant="success" onClick={() => handleProcessJustification(true)} isLoading={isProcessing} disabled={selectedJustification.status !== JustificationStatus.PENDIENTE || isProcessing}>Aprobar</Button>
-            </div>
-          }
+  <div className="flex justify-between items-center w-full">
+    <Button variant="light" onClick={() => setIsDetailModalOpen(false)}>Cerrar</Button>
+    {selectedJustification?.status === JustificationStatus.PENDIENTE && (
+      <div className="flex gap-2">
+        <Button variant="danger" onClick={() => handleOpenConfirmModal(selectedJustification, 'reject')}>Rechazar</Button>
+        <Button variant="success" onClick={() => handleOpenConfirmModal(selectedJustification, 'approve')}>Aprobar</Button>
+      </div>
+    )}
+  </div>
+}
         >
           <div className="space-y-4">
             <p><strong>Empleado:</strong> {selectedJustification.userName}</p>
@@ -200,6 +222,28 @@ const JustificationManagement: React.FC = () => {
               <a href={selectedJustification.fileUrl} target="_blank" rel="noopener noreferrer" className="text-amore-red underline hover:opacity-80">
                 Ver archivo en nueva pestaña <i className="fas fa-external-link-alt ml-1"></i>
               </a>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* --- NUEVO MODAL DE CONFIRMACIÓN DINÁMICO --- */}
+      {confirmAction && (
+        <Modal 
+          isOpen={!!confirmAction} 
+          onClose={() => setConfirmAction(null)}
+          title={`Confirmar ${confirmAction.action === 'approve' ? 'Aprobación' : 'Rechazo'}`}
+        >
+          <div className="p-4 text-center">
+            <p className="text-lg text-gray-700">
+              ¿Estás seguro de que quieres <strong>{confirmAction.action === 'approve' ? 'APROBAR' : 'RECHAZAR'}</strong> el justificante de 
+              <strong className="block my-2 text-xl text-amore-red">{confirmAction.justification.userName}</strong>?
+            </p>
+            <div className="mt-6 flex justify-end gap-4">
+              <Button onClick={() => setConfirmAction(null)} variant="light">Cancelar</Button>
+              <Button onClick={executeJustificationProcessing} variant={confirmAction.action === 'approve' ? 'success' : 'danger'} isLoading={isProcessing}>
+                Sí, {confirmAction.action === 'approve' ? 'Aprobar' : 'Rechazar'}
+              </Button>
             </div>
           </div>
         </Modal>

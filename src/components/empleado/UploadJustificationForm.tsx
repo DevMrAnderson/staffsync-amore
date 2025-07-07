@@ -50,11 +50,11 @@ const UploadJustificationForm: React.FC<UploadJustificationFormProps> = ({ shift
         userId: user.uid,
         userName: userData.name,
         shiftId: shiftId, // <-- GUARDAMOS EL ID DEL TURNO
-        fileUrl: downloadURL,
+        fileUrl: downloadURL, imageurl: downloadURL, // Usamos el mismo URL para ambos campos
         notes: notes,
         status: JustificationStatus.PENDIENTE,
         dateOfAbsence: Timestamp.fromDate(dateOfAbsence),
-        uploadedAt: serverTimestamp(),
+        uploadedAt: serverTimestamp(),        
       });
 
       // 3. Actualizar el estado del turno original

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Timestamp, writeBatch, doc, collection } from 'firebase/firestore';
 import { format, startOfWeek, addDays, isEqual, endOfWeek, addMonths, subMonths } from 'date-fns';
 import { es } from 'date-fns/locale/es';
-import { db } from '../../services/firebase'; // <-- AÑADE ESTA LÍNEA
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../../services/firebase';
 
 // Hooks y Contextos
 import { useAuth } from '../../contexts/AuthContext';
@@ -11,7 +12,6 @@ import { useNotification } from '../../contexts/NotificationContext';
 // Tipos y Constantes
 import { Shift, ChangeRequest, ChangeRequestStatus, ShiftStatus, ShiftTemplate } from '../../types';
 import { DATE_FORMAT_SPA_TIME_ONLY } from '../../constants';
-
 // Servicios de Firestore
 import { 
   updateChangeRequest, 
@@ -55,6 +55,7 @@ const EmpleadoDashboard: React.FC = () => {
   const [isShiftDetailModalOpen, setIsShiftDetailModalOpen] = useState(false);
   const [isJustificationModalOpen, setIsJustificationModalOpen] = useState(false);
   const [justifyingShift, setJustifyingShift] = useState<Shift | null>(null);
+  const [isRequestConfirmOpen, setIsRequestConfirmOpen] = useState(false);
 
   const [acceptedChange, setAcceptedChange] = useState<ChangeRequest | null>(null);
   const [isChangeAcceptedModalOpen, setIsChangeAcceptedModalOpen] = useState(false);
@@ -80,9 +81,26 @@ const EmpleadoDashboard: React.FC = () => {
 
 
       unsubscribeShifts = onShiftsForUserSnapshot(user.uid, rangeStart, rangeEnd, (fetchedShifts) => {
-        setShifts(fetchedShifts);
-        setLoading(false);
-      });
+  setShifts(fetchedShifts); // Actualizamos la UI con los datos recibidos
+
+  // --- NUEVA LÓGICA DE ACTUALIZACIÓN AUTOMÁTICA ---
+  const completeShiftCallable = httpsCallable(functions, 'completeShift');
+  const now = new Date();
+
+  // Revisamos cada turno que llegó de la base de datos
+  fetchedShifts.forEach(shift => {
+    // Si el turno está 'confirmado' y su hora de fin ya pasó...
+    if (shift.status === ShiftStatus.CONFIRMADO && shift.end.toDate() < now) {
+      console.log(`El turno ${shift.id} ha terminado. Actualizando a COMPLETADO...`);
+      // ...llamamos a nuestra nueva Cloud Function para que lo actualice.
+      // No necesitamos esperar la respuesta, lo hacemos en segundo plano.
+      completeShiftCallable({ shiftId: shift.id });
+    }
+  });
+  // ---------------------------------------------
+  
+  setLoading(false);
+});
     } else {
       getShiftsForMonth(currentDate, user.uid).then(setMonthlyShifts);
       getShiftTemplates().then(setShiftTemplates);
@@ -132,35 +150,55 @@ const EmpleadoDashboard: React.FC = () => {
       addNotification(`Error al procesar la decisión: ${error.message}`, 'error');
     }
   }, [selectedProposal, user, addNotification]);
+
+
+
+  // Esta nueva función solo abre el modal de confirmación
+  const handleOpenRequestConfirmModal = () => {
+  setIsShiftDetailModalOpen(false); // Cerramos el modal de detalles
+  // Un pequeño delay para que la transición de un modal a otro sea suave
+  setTimeout(() => setIsRequestConfirmOpen(true), 150);
+};
   
-  const handleRequestChange = useCallback(async (shiftToChange: Shift) => {
-    if (!user || !userData) {
-      addNotification('No se pudo identificar al usuario.', 'error');
-      return;
-    }
+  const executeRequestChange = useCallback(async () => {
+  // 1. Verificación de seguridad: nos aseguramos de tener todo lo necesario.
+  if (!selectedShift || !user || !userData) {
+    addNotification("No se pudo enviar la solicitud. Faltan datos.", 'error');
+    setIsRequestConfirmOpen(false); // Cerramos el modal por si acaso
+    return;
+  }
 
-    const batch = writeBatch(db);
+  // 2. Cerramos el modal de confirmación
+  setIsRequestConfirmOpen(false);
 
-    const shiftRef = doc(db, 'shifts', shiftToChange.id);
-    batch.update(shiftRef, { status: ShiftStatus.CAMBIO_SOLICITADO });
+  // 3. Preparamos las dos operaciones (actualizar el turno y crear la solicitud)
+  const batch = writeBatch(db);
 
-    const changeRequestRef = doc(collection(db, 'changeRequests'));
-    const newRequest: Omit<ChangeRequest, 'id' | 'requestedAt'> = {
-      originalShiftId: shiftToChange.id,
-      requestingUserId: user.uid,
-      requestingUserName: userData.name,
-      status: ChangeRequestStatus.PENDIENTE_GERENTE,
-    };
-    batch.set(changeRequestRef, { ...newRequest, requestedAt: Timestamp.now() });
-    
-    try {
-      await batch.commit();
-      addNotification('Tu solicitud de cambio ha sido enviada al gerente.', 'success');
-      setIsShiftDetailModalOpen(false);
-    } catch (error: any) {
-      addNotification(`Error al enviar la solicitud: ${error.message}`, 'error');
-    }
-  }, [user, userData, addNotification]);
+  // Operación A: Actualizar el estado del turno original
+  const shiftRef = doc(db, 'shifts', selectedShift.id);
+  batch.update(shiftRef, { status: ShiftStatus.CAMBIO_SOLICITADO });
+
+  // Operación B: Crear el nuevo documento de solicitud de cambio
+  const changeRequestRef = doc(collection(db, 'changeRequests'));
+  const newRequest: Omit<ChangeRequest, 'id' | 'requestedAt'> = {
+    originalShiftId: selectedShift.id,
+    requestingUserId: user.uid,
+    requestingUserName: userData.name,
+    status: ChangeRequestStatus.PENDIENTE_GERENTE,
+    // Buena práctica: guardamos el rol del turno en la solicitud
+    // para que la Cloud Function lo pueda usar después.
+    role: selectedShift.role, 
+  };
+  batch.set(changeRequestRef, { ...newRequest, requestedAt: Timestamp.now() });
+
+  // 4. Ejecutamos ambas operaciones juntas
+  try {
+    await batch.commit();
+    addNotification('Tu solicitud de cambio ha sido enviada con éxito.', 'success');
+  } catch (error: any) {
+    addNotification(`Error al enviar la solicitud: ${error.message}`, 'error');
+  }
+}, [selectedShift, user, userData, addNotification]); // Dependencias correctas
 
   const handleAcknowledgeChange = useCallback(async () => {
     if (!acceptedChange) return;
@@ -215,21 +253,86 @@ const EmpleadoDashboard: React.FC = () => {
           <div key={day.toISOString()} className={`p-3 rounded-lg shadow-sm min-h-[150px] flex flex-col ${isToday ? 'bg-red-50 border-2 border-amore-red' : 'bg-gray-50'}`}>
             <h3 className={`font-semibold text-center mb-1 capitalize ${isToday ? 'text-amore-red' : 'text-gray-600'}`}>{format(day, 'eee', { locale: es })}</h3>
             <p className={`text-sm text-center mb-2 ${isToday ? 'text-amore-red font-medium' : 'text-gray-400'}`}>{format(day, 'd MMM', { locale: es })}</p>
-            {dayShifts.map(shift => {
-              let cardClasses = 'bg-blue-100 border-blue-400 hover:bg-blue-200';
-              if (shift.status === ShiftStatus.CAMBIO_SOLICITADO || shift.status === ShiftStatus.JUSTIFICACION_PENDIENTE) { cardClasses = 'bg-yellow-100 border-yellow-400 hover:bg-yellow-200'; } 
-              else if (shift.status === ShiftStatus.FALTA_INJUSTIFICADA) { cardClasses = 'bg-red-100 border-red-400 hover:bg-red-200'; }
-              else if (shift.status === ShiftStatus.AUSENCIA_JUSTIFICADA) { cardClasses = 'bg-green-100 border-green-400 hover:bg-green-200'; }
-              return (
-                <div key={shift.id} className={`p-2.5 mb-2 rounded-md shadow-sm border-l-4 transition-all ${cardClasses}`}>
-                  <div onClick={() => handleOpenShiftDetail(shift)} className="cursor-pointer">
-                    <p className="font-semibold text-sm text-gray-800">{shift.shiftTypeName || 'Turno'}</p>
-                    <p className="text-xs text-gray-700">{shift.start ? format(shift.start.toDate(), DATE_FORMAT_SPA_TIME_ONLY, { locale: es }) : ''} - {shift.end ? format(shift.end.toDate(), DATE_FORMAT_SPA_TIME_ONLY, { locale: es }) : ''}</p>
-                  </div>
-                  {shift.status === ShiftStatus.FALTA_INJUSTIFICADA && (<Button onClick={() => handleOpenUploadForm(shift)} size="xs" variant="info" className="mt-2 w-full">Subir Justificante</Button>)}
-                </div>
-              );
-            })}
+            
+{dayShifts.map(shift => {
+  // Lógica para el color de fondo (sin cambios)
+  let cardClasses = 'bg-blue-100 border-blue-400 hover:bg-blue-200';
+  if (shift.status === ShiftStatus.CAMBIO_SOLICITADO || shift.status === ShiftStatus.JUSTIFICACION_PENDIENTE) { cardClasses = 'bg-yellow-100 border-yellow-400 hover:bg-yellow-200'; } 
+  else if (shift.status === ShiftStatus.FALTA_INJUSTIFICADA) { cardClasses = 'bg-red-100 border-red-400 hover:bg-red-200'; }
+  else if (shift.status === ShiftStatus.AUSENCIA_JUSTIFICADA || shift.status === ShiftStatus.CAMBIO_APROBADO) { cardClasses = 'bg-green-100 border-green-400 hover:bg-green-200'; }
+
+  // --- NUEVA FUNCIÓN INTERNA PARA LA ETIQUETA DE ESTADO ---
+  const renderStatusBadge = () => {
+    let icon = '';
+    let text = '';
+    let style = 'text-xs font-semibold px-2 py-0.5 rounded-full inline-flex items-center';
+
+    switch (shift.status) {
+      case ShiftStatus.CAMBIO_APROBADO:
+        icon = 'fas fa-exchange-alt';
+        text = 'Cambio Aprobado';
+        style += ' bg-green-200 text-green-800';
+        break;
+      case ShiftStatus.AUSENCIA_JUSTIFICADA:
+        icon = 'fas fa-check-circle';
+        text = 'Falta Justificada';
+        style += ' bg-green-200 text-green-800';
+        break;
+      case ShiftStatus.FALTA_INJUSTIFICADA:
+        icon = 'fas fa-times-circle';
+        text = 'Falta Injustificada';
+        style += ' bg-red-200 text-red-800';
+        break;
+      case ShiftStatus.COMPLETADO:
+        icon = 'fas fa-star';
+        text = 'Turno Completado';
+        style += ' bg-blue-200 text-blue-800';
+        break;
+      case ShiftStatus.JUSTIFICACION_PENDIENTE:
+      icon = 'fas fa-file-medical-alt';
+      text = 'Justificante Pendiente';
+      style += ' bg-yellow-200 text-yellow-800';
+      break;
+      default:
+        return null; // No mostramos etiqueta para estados normales
+    }
+    
+    return (
+      <div className="mt-2">
+        <span className={style}>
+          <i className={`${icon} mr-1.5`}></i>
+          {text}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div key={shift.id} className={`p-2.5 mb-2 rounded-lg shadow-sm border-l-4 transition-all ${cardClasses}`}>
+      <div onClick={() => handleOpenShiftDetail(shift)} className="cursor-pointer">
+        <p className="font-semibold text-sm text-gray-800">{shift.shiftTypeName || 'Turno'}</p>
+        <p className="text-xs text-gray-700">{shift.start ? format(shift.start.toDate(), 'p', { locale: es }) : ''} - {shift.end ? format(shift.end.toDate(), 'p', { locale: es }) : ''}</p>
+      </div>
+
+
+
+      {/* --- ¡AQUÍ ESTÁ LA NUEVA LÓGICA! --- */}
+      {/* Si el estado es 'cambio_solicitado', muestra esta etiqueta */}
+      {shift.status === ShiftStatus.CAMBIO_SOLICITADO && (
+        <div className="mt-2 text-xs font-semibold text-yellow-800">
+          <i className="fas fa-hourglass-half mr-1.5 animate-pulse"></i>
+          <span>Buscando un cambio...</span>
+        </div>
+      )}
+      
+      {/* --- AQUÍ LLAMAMOS A LA NUEVA FUNCIÓN --- */}
+      {renderStatusBadge()}
+      
+      {/* El botón para subir justificante se queda igual */}
+      {shift.status === ShiftStatus.FALTA_INJUSTIFICADA && (<Button onClick={() => handleOpenUploadForm(shift)} size="xs" variant="info" className="mt-2 w-full">Subir Justificante</Button>)}
+    </div>
+  );
+})}
           </div>
         );
       })}
@@ -266,7 +369,7 @@ const EmpleadoDashboard: React.FC = () => {
         {loading ? <LoadingSpinner text="Cargando horario..." /> : (
           calendarView === 'week' 
             ? renderWeekView() 
-            : <MonthView currentDate={currentDate} shifts={monthlyShifts} templates={shiftTemplates} onShiftClick={handleDayClickFromMonth} />
+            : <MonthView currentDate={currentDate} shifts={monthlyShifts} templates={shiftTemplates} onDayClick={handleDayClickFromMonth} />
         )}
       </section>
     </div>
@@ -294,8 +397,9 @@ const EmpleadoDashboard: React.FC = () => {
           shift={selectedShift} 
           isProposal={!!selectedProposal}
           onProposalDecision={selectedProposal ? handleProposalDecision : undefined}
-          onRequestChange={!selectedProposal ? handleRequestChange : undefined}
-          canRequestChange={!selectedProposal && selectedShift.status === ShiftStatus.CONFIRMADO}
+          onRequestChange={handleOpenRequestConfirmModal}
+          canRequestChange={!selectedProposal && selectedShift.status !== ShiftStatus.CAMBIO_SOLICITADO && selectedShift.status !== ShiftStatus.CAMBIO_EN_PROCESO && selectedShift.status === ShiftStatus.CONFIRMADO && 
+  new Date() < selectedShift.start.toDate()}
         />
       )}
       
@@ -328,7 +432,32 @@ const EmpleadoDashboard: React.FC = () => {
                 </div>
             </div>
          </Modal>
-      )}
+)}
+
+{/* --- MODAL DE CONFIRMACIÓN PARA SOLICITAR CAMBIO --- */}
+<Modal
+  isOpen={isRequestConfirmOpen}
+  onClose={() => setIsRequestConfirmOpen(false)}
+  title="Confirmar Solicitud de Cambio"
+>
+  <div className="p-4 text-center">
+    <i className="fas fa-question-circle text-4xl text-yellow-500 mb-4"></i>
+    <h3 className="text-lg font-medium text-gray-900">¿Solicitar cambio de turno?</h3>
+    {selectedShift && (
+      <p className="text-sm text-gray-600 mt-2">
+        Estás a punto de solicitar un cambio para tu turno del <strong className="block my-1">{format(selectedShift.start.toDate(), 'eeee, d \'de\' MMMM', { locale: es })}</strong>.
+      </p>
+    )}
+    <div className="mt-6 flex justify-center gap-4">
+      <Button onClick={() => setIsRequestConfirmOpen(false)} variant="light">
+        Cancelar
+      </Button>
+      <Button onClick={executeRequestChange} variant="primary">
+        Sí, Solicitar Cambio
+      </Button>
+    </div>
+  </div>
+</Modal>
     </div>
   );
 };

@@ -13,6 +13,10 @@ export const FirebaseCollections = {
   CHECKLIST_TEMPLATES: 'checklistTemplates',
   SHIFT_CHECKLIST_TEMPLATES: 'shiftChecklistTemplates',
   SHIFT_REPORTS: 'shiftReports',
+  MANAGER_SHIFT_OFFERS: 'managerShiftOffers',
+  ANNOUNCEMENTS: 'announcements', // Nueva colección para anuncios
+  ANALYTICS: 'analytics', // Nueva colección para analíticas
+  STATUS: 'status',
 };
 
 // Example Shift Type Names (these would ideally be created via an admin interface or seeded)
@@ -50,7 +54,8 @@ export const HISTORY_ACTIONS = {
   UPLOAD_JUSTIFICATION: "SUBIDA_JUSTIFICANTE",
   APPROVE_JUSTIFICATION: "APROBACION_JUSTIFICANTE",
   REJECT_JUSTIFICATION: "RECHAZO_JUSTIFICANTE",
-  MARK_ABSENCE: 'mark_absence',
+  MARK_ABSENCE: 'MARCAR_FALTA',
+  REMOVE_ABSENCE: 'REMOVER_FALTA',
 };
 
 // Define los niveles jerárquicos. Un empleado puede reemplazar a otro de su mismo nivel.

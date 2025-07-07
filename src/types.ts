@@ -10,6 +10,16 @@ export enum UserRole {
   DUENO = 'dueno',
 }
 
+
+// --- AÑADE ESTA NUEVA INTERFAZ ---
+export interface Announcement {
+  id: string;
+  title: string;
+  message: string;
+  createdAt: Timestamp;
+}
+
+
 export interface User {
   id: string; // Firebase Auth UID
   email: string;
@@ -18,6 +28,8 @@ export interface User {
   createdAt: Timestamp;
   status?: 'active' | 'inactive';
   passwordResetRequired?: boolean;
+  schedulePreferences?: string;
+  lastAnnouncementRead?: Timestamp; // Guarda la fecha del último anuncio leído
 }
 
 export interface ChecklistItem {
@@ -54,11 +66,13 @@ export enum ShiftStatus {
   CONFIRMADO = 'confirmado',
   CAMBIO_SOLICITADO = 'cambio_solicitado',
   CAMBIO_EN_PROCESO = 'cambio_en_proceso',
+  CAMBIO_APROBADO = 'cambio_aprobado',
   COMPLETADO = 'completado',
   AUSENCIA_JUSTIFICADA = 'ausencia_justificada',
   FALTA_INJUSTIFICADA = 'falta_injustificada',
   PENDIENTE = 'pendiente',
-  JUSTIFICACION_PENDIENTE = 'justificacion_pendiente', // <-- NUEVO ESTADO
+  JUSTIFICACION_PENDIENTE = 'justificacion_pendiente',
+  CAMBIO_OFRECIDO_GERENTE = 'cambio_ofrecido_gerente', // <-- NUEVO ESTADO
 }
 
 export interface Shift {
@@ -104,6 +118,7 @@ export interface ChangeRequest {
   requestedAt: Timestamp;
   managerNotes?: string; // Optional notes from manager when processing
   resolutionNotes?: string; // Notes on approval/rejection
+  rejectionReason?: string;
 }
 
 export enum JustificationStatus {
@@ -186,8 +201,49 @@ export interface ShiftReport {
   notes?: string;
   lastUpdated: Timestamp;
   // Este es el cambio clave:
+  completedTasks?: { [task: string]: boolean; };
   checklistSnapshot: {
     task: string;
     done: boolean;
   }[];
+}
+
+// --- AÑADE ESTA NUEVA INTERFAZ AL FINAL ---
+
+export interface ShiftOffer {
+  id: string;                  // El ID de la propia oferta
+  shiftId: string;             // El ID del turno que se está ofreciendo
+  offeringManagerId: string;   // Quien ofrece el turno
+  offeringManagerName: string;
+  offeredAt: Timestamp;
+  status: 'disponible' | 'reclamado'; // Estado de la oferta
+  
+  // Estos campos son opcionales porque solo existen cuando alguien reclama el turno
+  claimingManagerId?: string;  
+  claimingManagerName?: string;
+
+  // Este campo es opcional porque lo "poblamos" en el frontend para mostrar los detalles
+  shiftDetails?: Shift;
+}
+
+
+export interface DailyMetric {
+  date: string; // Formato 'YYYY-MM-DD'
+  totalHours: number;
+  changeRequestCount: number;
+}
+
+export interface EmployeeMetric {
+  userId: string;
+  name: string;
+  totalHours: number;
+  totalShifts: number;
+  changeRequestCount: number;
+  justifiedAbsenceCount: number;
+}
+
+export interface AnalyticsSummary {
+  lastUpdated: Timestamp;
+  monthlyHours: { month: string, hours: number }[];
+  employeeMetrics: EmployeeMetric[];
 }

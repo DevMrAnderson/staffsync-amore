@@ -21,6 +21,7 @@ import {
   limit,
   startAfter,
   QueryDocumentSnapshot,
+  addDocument,
   getCountFromServer,
 } from 'firebase/firestore';
 import { db } from './firebase'; // Ensure db is correctly initialized and exported
@@ -39,7 +40,7 @@ import {
   JustificationStatus
 } from '../types';
 import { startOfDay, endOfDay, startOfMonth, endOfMonth, startOfWeek, addDays, endOfWeek } from 'date-fns'; // Asegúrate de tener esto
-
+import { httpsCallable } from 'firebase/functions';
 
 /**
  * Escucha en tiempo real las notificaciones NO LEÍDAS de un usuario específico.
@@ -154,29 +155,45 @@ export const getCurrentActiveShiftForUser = async (userId: string): Promise<Shif
 // Añade esta nueva función a tu firestoreService.ts
 
 // Busca el reporte del turno que terminó justo antes de la hora de inicio dada
-export const getPreviousShiftReport = async (currentShiftStartTime: Timestamp): Promise<ShiftReport | null> => {
+// En: src/services/firestoreService.ts
+
+// Busca el reporte de turno más reciente guardado por CUALQUIER gerente, 
+// excluyendo el reporte del turno activo actual.
+export const getPreviousShiftReport = async (currentShiftId: string): Promise<ShiftReport | null> => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
 
-  // Buscamos el turno más reciente que haya terminado ANTES de que el actual comience
+  console.log("%c--- DEBUG: Buscando último reporte de gerente ---", "color: purple; font-weight: bold;");
+
+  // 1. Buscamos en la colección de reportes
   const q = query(
-    collection(db, FirebaseCollections.SHIFTS),
-    where('end', '<', currentShiftStartTime),
-    orderBy('end', 'desc'),
-    limit(1)
+    collection(db, FirebaseCollections.SHIFT_REPORTS),
+    // 2. Ordenamos por fecha de actualización, el más reciente primero
+    orderBy('lastUpdated', 'desc'),
+    // 3. Traemos los últimos 2 reportes
+    limit(2)
   );
 
-  const shiftsSnapshot = await getDocs(q);
+  const reportSnapshot = await getDocs(q);
 
-  if (shiftsSnapshot.empty) {
-    console.log("No se encontró un turno previo.");
+  if (reportSnapshot.empty) {
+    console.log("No se encontró ningún reporte previo.");
     return null;
   }
-
-  const previousShift = shiftsSnapshot.docs[0];
   
-  // Una vez que tenemos el turno previo, buscamos su reporte de checklist
-  console.log(`Turno previo encontrado: ${previousShift.id}. Buscando su reporte...`);
-  return getShiftReport(previousShift.id);
+  // 4. Los reportes vienen ordenados por fecha. El primero es el del turno activo actual,
+  //    por lo que el que nos interesa es el SEGUNDO en la lista, si existe.
+  const reports = reportSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as ShiftReport);
+  
+  // Buscamos el primer reporte que NO sea el del turno actual
+  const previousReport = reports.find(report => report.id !== currentShiftId);
+
+  if (previousReport) {
+    console.log(`%cÉXITO: Reporte previo encontrado con ID: ${previousReport.id}`, "color: green; font-weight: bold;");
+    return previousReport;
+  } else {
+    console.log("No se encontró un reporte previo que no sea el actual.");
+    return null;
+  }
 };
 
 export const getShiftsForDay = async (day: Date): Promise<Shift[]> => {
@@ -197,23 +214,31 @@ export const getShiftsForDay = async (day: Date): Promise<Shift[]> => {
   return getAllDocuments<Shift>(FirebaseCollections.SHIFTS, q);
 };
 
-export const getShiftsForWeek = async (startDate: Date, endDate: Date): Promise<Shift[]> => {
+export const getShiftsForWeek = async (
+  startDate: Date | Timestamp, // Aceptamos ambos tipos para ser flexibles
+  endDate: Date | Timestamp,   // Aceptamos ambos tipos
+  userId?: string
+): Promise<Shift[]> => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
 
-  const startTimestamp = Timestamp.fromDate(startOfWeek(startDate, { weekStartsOn: 1 }));
-  const endTimestamp = Timestamp.fromDate(endOfWeek(endDate, { weekStartsOn: 1 }));
+  // --- LA CORRECCIÓN ---
+  // Convertimos los Timestamps a objetos Date de JavaScript antes de usarlos.
+  const startAsDate = startDate instanceof Timestamp ? startDate.toDate() : startDate;
+  const endAsDate = endDate instanceof Timestamp ? endDate.toDate() : endDate;
+  // -------------------
 
-  // --- SENSORES DE DEPURACIÓN ---
-  console.log("--- DEBUG [firestoreService]: Buscando turnos entre... ---");
-  console.log("Desde:", startTimestamp.toDate());
-  console.log("Hasta:", endTimestamp.toDate());
-  // --- FIN DE SENSORES ---
+  const startTimestamp = Timestamp.fromDate(startOfWeek(startAsDate, { weekStartsOn: 1 }));
+  const endTimestamp = Timestamp.fromDate(endOfWeek(endAsDate, { weekStartsOn: 1 }));
 
-  const q = query(
+  let q = query(
     collection(db, FirebaseCollections.SHIFTS),
     where('start', '>=', startTimestamp),
     where('start', '<=', endTimestamp)
   );
+
+  if (userId) {
+    q = query(q, where('userId', '==', userId));
+  }
   
   return getAllDocuments<Shift>(FirebaseCollections.SHIFTS, q);
 };
@@ -302,19 +327,41 @@ export const deleteDocument = async (collectionName: string, id: string): Promis
 // --- Specific User functions ---
 export const getUser = (id: string): Promise<User | null> => getDocument<User>(FirebaseCollections.USERS, id);
 export const getAllUsersByRole = (role?: UserRole): Promise<User[]> => {
+  // Empezamos la consulta filtrando SIEMPRE por status 'active'
   let q = query(collection(db, FirebaseCollections.USERS));
+
   if (role) {
     q = query(q, where('role', '==', role));
   }
+  
+  // Añadimos el ordenamiento al final
+  q = query(q, orderBy('name'));
+
   return getAllDocuments<User>(FirebaseCollections.USERS, q);
 };
 export const updateUser = (id: string, data: Partial<User>): Promise<void> => updateDocument<User>(FirebaseCollections.USERS, id, data);
-// User creation should be: 1. Firebase Auth creates user. 2. Then, create Firestore doc with UID.
+
+// User creation: 1. Firebase Auth creates user. 2. Then, this function creates the Firestore doc.
 export const createUserDocument = (uid: string, data: Omit<User, 'id' | 'createdAt'>): Promise<void> => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
+
   const userDocRef = doc(db, FirebaseCollections.USERS, uid);
-  // Usamos setDoc para CREAR el documento.
-  return setDoc(userDocRef, { ...data, createdAt: serverTimestamp() });
+  
+  // --- LÓGICA DE ESTADO AUTOMÁTICO ---
+  // Preparamos los datos base del usuario
+  const userData = {
+    ...data,
+    createdAt: serverTimestamp(),
+  };
+
+  // Si el rol NO es gerente o dueño, lo marcamos como 'active' por defecto.
+  if (data.role !== UserRole.DUENO) {
+    userData.status = 'active';
+  }
+  // ------------------------------------
+
+  // Usamos setDoc para CREAR el documento con los datos ya completos.
+  return setDoc(userDocRef, userData);
 };
 
 
@@ -477,25 +524,43 @@ export const onAcceptedChangeRequestsForUserSnapshot = (userId: string, callback
 // Listener for change requests pending manager action
 export const onPendingManagerChangeRequestsSnapshot = (callback: (requests: ChangeRequest[]) => void): Unsubscribe => {
   if (!db) throw new Error("Firestore DB no esta inicializada.");
+  
   const q = query(
     collection(db, FirebaseCollections.CHANGE_REQUESTS),
-    where('status', '==', ChangeRequestStatus.PENDIENTE_GERENTE),
+    where('status', 'in', [
+      ChangeRequestStatus.PENDIENTE_GERENTE,
+      ChangeRequestStatus.ACEPTADO_EMPLEADO
+    ]),
     orderBy('requestedAt', 'desc')
   );
+
   return onSnapshot(q, async (snapshot) => {
-    const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ChangeRequest));
-    const populatedRequests = await Promise.all(requests.map(async req => {
-        const originalShift = req.originalShiftId ? await getShift(req.originalShiftId) : null;
-        const requestingUser = req.requestingUserId ? await getUser(req.requestingUserId) : null;
-        const shiftType = originalShift?.shiftTypeId ? await getShiftType(originalShift.shiftTypeId) : null;
-        return { 
-             ...req, 
-            originalShift: originalShift ? {...originalShift, shiftType: shiftType || undefined } : undefined, 
-            requestingUserName: requestingUser?.name || 'Desconocido'
-        };
-    }));
+    const requestsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as ChangeRequest);
+
+    // --- LÓGICA DE POBLACIÓN CORREGIDA Y ASEGURADA ---
+    const populatedRequests = await Promise.all(
+      requestsData.map(async (req) => {
+        // Por cada solicitud, si tiene un ID de turno original...
+        if (req.originalShiftId) {
+          // ...buscamos el documento completo del turno en la colección 'shifts'.
+          // Usamos la función genérica 'getDocument' que ya existe.
+          const shiftDetails = await getDocument<Shift>(FirebaseCollections.SHIFTS, req.originalShiftId);
+          
+          // Devolvemos la solicitud original, pero con el objeto 'originalShift' completo y adjunto.
+          return { ...req, originalShift: shiftDetails || undefined };
+        }
+        // Si no tiene ID de turno, la devolvemos como está.
+        return req;
+      })
+    );
+    // -----------------------------------------------------------
+
     callback(populatedRequests);
-  }, (error) => console.error("Error en onPendingManagerChangeRequestsSnapshot:", error));
+  }, 
+  (error) => {
+    console.error("Error en el listener de onPendingManagerChangeRequestsSnapshot:", error);
+    // Aquí puedes usar tu addNotification si lo pasas como parámetro.
+  });
 };
 
 
@@ -635,6 +700,65 @@ export const getShiftReport = (shiftId: string): Promise<ShiftReport | null> => 
   return getDocument<ShiftReport>(FirebaseCollections.SHIFT_REPORTS, shiftId);
 };
 
+// --- NUEVAS FUNCIONES PARA INTERCAMBIO DE GERENTES ---
+
+// Para que un gerente ofrezca su turno
+export const offerShiftToManagers = (
+  shift: Shift, 
+  managerId: string, 
+  managerName: string
+): Promise<void> => {
+  if (!db) throw new Error("Firestore DB no esta inicializada.");
+
+  // Creamos una referencia a un nuevo documento en la colección de ofertas
+  const offerDocRef = doc(collection(db, FirebaseCollections.MANAGER_SHIFT_OFFERS));
+
+  const newOffer: ShiftOffer = {
+    id: offerDocRef.id,
+    shiftId: shift.id,
+    offeringManagerId: managerId,
+    offeringManagerName: managerName,
+    offeredAt: Timestamp.now(),
+    status: 'disponible',
+    // Poblamos los detalles del turno directamente para no tener que buscarlos después
+    shiftDetails: shift 
+  };
+
+  // Usamos setDoc para crear el nuevo documento de oferta
+  return setDoc(offerDocRef, newOffer);
+};
+
+// Para escuchar las ofertas disponibles (excluyendo las propias)
+export const onAvailableShiftOffersSnapshot = (currentManagerId: string, callback: (offers: ShiftOffer[]) => void): Unsubscribe => {
+  const q = query(
+    collection(db, 'managerShiftOffers'),
+    where('status', '==', 'disponible'),
+    where('offeringManagerId', '!=', currentManagerId)
+  );
+
+  return onSnapshot(q, async (snapshot) => {
+    const offersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as ShiftOffer);
+    // Poblamos con los detalles del turno para mostrarlos en la UI
+    const populatedOffers = await Promise.all(offersData.map(async offer => {
+      const shiftDetails = await getDocument<Shift>('shifts', offer.shiftId);
+      return { ...offer, shiftDetails: shiftDetails || undefined };
+    }));
+    callback(populatedOffers);
+  });
+};
+
+// Para que un gerente reclame un turno
+export const claimShiftOffer = (offerId: string, claimingManagerId: string, claimingManagerName: string): Promise<void> => {
+  const offerRef = doc(db, 'managerShiftOffers', offerId);
+  return updateDoc(offerRef, {
+    status: 'reclamado',
+    claimingManagerId: claimingManagerId,
+    claimingManagerName: claimingManagerName,
+  });
+};
+
+
+
 // Crea o actualiza el reporte de un turno
 export const upsertShiftReport = (
   shiftId: string, 
@@ -739,3 +863,97 @@ export const markChangeRequestAsNotified = async (requestId: string): Promise<vo
   });
 };
 
+
+// --- NUEVAS FUNCIONES CON OYENTES EN TIEMPO REAL ---
+
+// Oyente para los turnos de una semana
+export const onShiftsForWeekSnapshot = (
+  startDate: Date,
+  endDate: Date,
+  callback: (shifts: Shift[]) => void,
+  userId?: string
+): Unsubscribe => {
+  const startTimestamp = Timestamp.fromDate(startOfWeek(startDate, { weekStartsOn: 1 }));
+  const endTimestamp = Timestamp.fromDate(endOfWeek(endDate, { weekStartsOn: 1 }));
+
+  let q = query(
+    collection(db, FirebaseCollections.SHIFTS),
+    where('start', '>=', startTimestamp),
+    where('start', '<=', endTimestamp)
+  );
+
+  if (userId) {
+    q = query(q, where('userId', '==', userId));
+  }
+  
+  // onSnapshot es el oyente en tiempo real
+  return onSnapshot(q, (snapshot) => {
+    const shiftsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as Shift);
+    callback(shiftsData);
+  });
+};
+
+// Oyente para los turnos de un mes
+export const onShiftsForMonthSnapshot = (
+  date: Date,
+  callback: (shifts: Shift[]) => void,
+  userId?: string
+): Unsubscribe => {
+  const monthStart = startOfMonth(date);
+  const monthEnd = endOfMonth(date);
+
+  let q = query(
+    collection(db, FirebaseCollections.SHIFTS),
+    where('start', '>=', Timestamp.fromDate(monthStart)),
+    where('start', '<=', Timestamp.fromDate(monthEnd))
+  );
+
+  if (userId) {
+    q = query(q, where('userId', '==', userId));
+  }
+
+  return onSnapshot(q, (snapshot) => {
+    const shiftsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as Shift);
+    callback(shiftsData);
+  });
+};
+
+// Para crear un nuevo anuncio
+export const createAnnouncement = (data: { title: string, message: string }): Promise<void> => {
+  return addDocument(FirebaseCollections.ANNOUNCEMENTS, data);
+};
+
+// Para obtener el último anuncio publicado
+export const getLatestAnnouncement = async (): Promise<Announcement | null> => {
+  const q = query(collection(db, FirebaseCollections.ANNOUNCEMENTS), orderBy('createdAt', 'desc'), limit(1));
+  const snapshot = await getDocs(q);
+  if (snapshot.empty) {
+    return null;
+  }
+  return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Announcement;
+};
+
+    
+export const getAnalyticsSummary = (): Promise<AnalyticsSummary | null> => {
+  return getDocument<AnalyticsSummary>(FirebaseCollections.ANALYTICS, 'summary');
+};
+
+
+// OYENTE PARA EL ESTADO DE LAS CONEXIONES
+export const onConnectionStatusSnapshot = (callback: (status: ConnectionStatus | null) => void): Unsubscribe => {
+  const statusRef = doc(db, FirebaseCollections.STATUS, 'connections');
+  return onSnapshot(statusRef, (doc) => {
+    callback(doc.exists() ? doc.data() as ConnectionStatus : null);
+  });
+};
+
+// LLAMADAS A LAS NUEVAS CLOUD FUNCTIONS
+export const reportAppOutage = (appName: keyof ConnectionStatus) => {
+  const report = httpsCallable(functions, 'reportAppOutage');
+  return report({ appName });
+};
+
+export const resolveAppOutage = (appName: keyof ConnectionStatus) => {
+  const resolve = httpsCallable(functions, 'resolveAppOutage');
+  return resolve({ appName });
+};

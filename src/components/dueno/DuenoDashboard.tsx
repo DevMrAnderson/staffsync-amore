@@ -17,6 +17,8 @@ import { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import GerenteDashboard from '../gerente/GerenteDashboard';
 import ChecklistManager from './ChecklistManager';
 import ShiftReportsView from './ShiftReportsView';
+import AnnouncementManager from './AnnouncementManager';
+import MetricsDashboard from './MetricsDashboard';
 
 // --- User Management Component ---
 interface UserFormState {
@@ -27,7 +29,50 @@ interface UserFormState {
   password?: string;
 }
 
+interface UserManagementViewProps {
+  onDeactivateUser: (user: User) => void;
+}
+
+
+
+
+
 const UserManagementView: React.FC = () => {
+  const [userToDeactivate, setUserToDeactivate] = useState<User | null>(null);
+  const [isConfirmDeactivateModalOpen, setIsConfirmDeactivateModalOpen] = useState(false);
+
+/**
+ * Esta función se llama al hacer clic en el botón "Desactivar" de un usuario.
+ * Guarda el usuario seleccionado en el estado y abre el modal de confirmación.
+ */
+const handleOpenDeactivateModal = (user: User) => {
+  setUserToDeactivate(user);
+  setIsConfirmDeactivateModalOpen(true);
+};
+
+/**
+ * Esta función se ejecuta al hacer clic en "Sí, Desactivar" en el modal.
+ * Contiene la lógica para actualizar la base de datos.
+ */
+const executeDeactivation = async () => {
+  if (!userToDeactivate) return;
+
+  try {
+    // Actualizamos el estado del usuario a 'inactive'
+    await updateUser(userToDeactivate.id, { status: 'inactive' });
+    addNotification(`Usuario ${userToDeactivate.name} ha sido desactivado.`, 'success');
+    
+    // Aquí puedes añadir lógica para refrescar tu lista de usuarios si es necesario
+    fetchUsers(); 
+    
+  } catch (error: any) {
+    addNotification(`Error al desactivar usuario: ${error.message}`, 'error');
+  } finally {
+    // Cerramos el modal y limpiamos el estado
+    setIsConfirmDeactivateModalOpen(false);
+    setUserToDeactivate(null);
+  }
+};
   const { addNotification } = useNotification();
   const { userData: currentAdmin } = useAuth();
   const [allUsers, setAllUsers] = useState<User[]>([]);
@@ -36,6 +81,7 @@ const UserManagementView: React.FC = () => {
   const [editingUser, setEditingUser] = useState<UserFormState | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [showInactive, setShowInactive] = useState(false);
+  
 
   const [confirmState, setConfirmState] = useState<{
     isOpen: boolean;
@@ -66,22 +112,6 @@ const UserManagementView: React.FC = () => {
     fetchUsers();
   }, [fetchUsers]);
 
-  const handleDeactivateUser = (userToDeactivate: User) => {
-    setConfirmState({
-      isOpen: true,
-      title: 'Confirmar Desactivación',
-      message: `¿Estás seguro de que quieres desactivar a ${userToDeactivate.name}? El usuario ya no podrá iniciar sesión.`,
-      confirmText: 'Sí, Desactivar',
-      confirmVariant: 'danger',
-      onConfirm: async () => {
-        try {
-          await updateUser(userToDeactivate.id, { status: 'inactive' });
-          addNotification(`Usuario ${userToDeactivate.name} desactivado.`, 'success');
-          fetchUsers();
-        } catch (error: any) { addNotification(`Error al desactivar: ${error.message}`, 'error'); }
-      }
-    });
-  };
   
   const handleReactivateUser = (userToReactivate: User) => {
     setConfirmState({
@@ -214,7 +244,7 @@ const UserManagementView: React.FC = () => {
                     <>
                       <Button onClick={() => handleOpenUserModal(user)} size="sm" variant="light" icon={<i className="fas fa-edit"></i>} className="mr-2">Editar</Button>
                       <Button 
-  onClick={() => handleDeactivateUser(user)} 
+  onClick={() => handleOpenDeactivateModal(user)} 
   size="sm" 
   variant="danger" 
   icon={<i className="fas fa-user-slash"></i>}
@@ -286,6 +316,34 @@ const UserManagementView: React.FC = () => {
             <p className="text-amore-gray">{confirmState.message}</p>
         </Modal>
       )}
+
+      {/* --- MODAL DE CONFIRMACIÓN PARA DESACTIVAR USUARIO --- */}
+      <Modal
+        // Aquí USAMOS la variable, lo que soluciona el error.
+        isOpen={isConfirmDeactivateModalOpen}
+        onClose={() => setIsConfirmDeactivateModalOpen(false)}
+        title="⚠️ Confirmar Desactivación"
+      >
+        {userToDeactivate && (
+          <div className="p-4 text-center">
+            <p className="text-lg text-gray-700">
+              ¿Estás seguro de que quieres desactivar a
+              <strong className="block my-2 text-xl text-amore-red">{userToDeactivate.name}</strong>?
+            </p>
+            <p className="text-sm text-gray-500 mt-2">
+              El usuario ya no podrá iniciar sesión y sus turnos futuros serán desasignados.
+            </p>
+            <div className="mt-6 flex justify-center gap-4">
+              <Button onClick={() => setIsConfirmDeactivateModalOpen(false)} variant="light">
+                Cancelar
+              </Button>
+              <Button onClick={executeDeactivation} variant="danger">
+                Sí, Desactivar
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };
@@ -419,10 +477,12 @@ const UniversalHistoryView: React.FC = () => {
 
 
 // --- Main Dueno Dashboard Component ---
-type DuenoView = 'userManagement' | 'universalHistory' | 'managerFunctions' | 'checklistManagement' | 'shiftReports';
+type DuenoView = 'userManagement' | 'universalHistory' | 'managerFunctions' | 'checklistManagement' | 'shiftReports' | 'announcements' | 'metrics';
 const DUENO_VIEWS_CONFIG: {id: DuenoView, label: string, icon: string}[] = [
+    { id: 'metrics', label: 'Métricas', icon: 'fas fa-chart-line' },
     { id: 'managerFunctions', label: 'Funciones de Gerente', icon: 'fas fa-briefcase'},
     { id: 'userManagement', label: 'Gestión de Usuarios', icon: 'fas fa-users-cog' },
+    { id: 'announcements', label: 'Anuncios Globales', icon: 'fas fa-bullhorn' },
     { id: 'checklistManagement', label: 'Gestión de Checklists', icon: 'fas fa-tasks' },
     { id: 'shiftReports', label: 'Reportes de Turno', icon: 'fas fa-clipboard-check' },
     { id: 'universalHistory', label: 'Historial Universal', icon: 'fas fa-history' },
@@ -439,6 +499,9 @@ const DuenoDashboard: React.FC = () => {
       </div>
     );
   }
+    
+
+
 
   const renderView = () => {
     switch (activeView) {
@@ -446,7 +509,13 @@ const DuenoDashboard: React.FC = () => {
       case 'universalHistory': return <UniversalHistoryView />;
       case 'managerFunctions': return <GerenteDashboard />;
       case 'checklistManagement': return <ChecklistManager />;
+      case 'publishedSchedules':
+  return <PublishedSchedules onNavigateToBuilder={handleNavigateToBuilder} />;
       case 'shiftReports': return <ShiftReportsView />;
+      case 'announcements':
+        return <AnnouncementManager />;
+      case 'metrics':
+        return <MetricsDashboard />;
       default: 
         const _exhaustiveCheck: never = activeView;
         return <p>Vista no implementada: {_exhaustiveCheck}</p>;
@@ -476,6 +545,12 @@ const DuenoDashboard: React.FC = () => {
             {renderView()}
         </main>
       </div>
+
+
+      
+
+
+
     </div>
   );
 };

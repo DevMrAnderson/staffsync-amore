@@ -12,7 +12,9 @@
     "date-fns": "^3.6.0",
     "firebase": "^11.9.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.3",
+    "recharts": "^3.0.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.10",

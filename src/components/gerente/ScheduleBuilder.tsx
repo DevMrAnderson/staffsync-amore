@@ -3,7 +3,7 @@ import { Shift, ShiftStatus, ShiftTemplate, User, UserRole, PartialShiftForTempl
 import Button from '../common/Button';
 import LoadingSpinner from '../common/LoadingSpinner';
 import { useNotification } from '../../contexts/NotificationContext';
-import { getShiftTemplates, getAllUsersByRole, replaceShiftsForTemplate, getShiftsForDay, getShiftsForMonth, getShiftsForWeek, updateShift } from '../../services/firestoreService';
+import { getShiftTemplates, getAllUsersByRole, replaceShiftsForTemplate, getShiftsForDay, getShiftsForMonth, getShiftsForWeek, updateShift, offerShiftToManagers } from '../../services/firestoreService';
 import { useAuth } from '../../contexts/AuthContext';
 import { Timestamp } from 'firebase/firestore';
 import { startOfWeek, addDays, isEqual, format, parse, endOfWeek, addMonths, subMonths, startOfMonth, subDays } from 'date-fns';
@@ -20,6 +20,9 @@ const PENDING_ASSIGNMENT_ID = 'pending';
 interface ScheduleBuilderProps {
   initialTemplate?: PartialShiftForTemplate[] | null;
   onTemplateConsumed?: () => void;
+  onShiftClick?: (shift: Shift) => void; // Esta ya debería estar
+  currentDate: Date;                     // <-- Añade esta
+  onDateChange: (date: Date) => void;  // <-- Y esta
 }
 type ViewMode = 'week' | 'month';
 interface PendingAssignment { userId: string; role: string; }
@@ -32,7 +35,7 @@ interface ConfirmModalState {
   confirmVariant: 'primary' | 'danger' | 'warning';
 }
 
-const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTemplateConsumed }) => {
+const ScheduleBuilder: React.FC<ScheduleBuilderProps & { onShiftClick?: (shift: Shift) => void }> = ({ initialTemplate, onTemplateConsumed, onShiftClick, currentDate, onDateChange }) => {
   // Estados
   const { userData } = useAuth();
   const { addNotification } = useNotification();
@@ -40,7 +43,6 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [shiftTemplates, setShiftTemplates] = useState<ShiftTemplate[]>([]);
   const [employees, setEmployees] = useState<User[]>([]);
-  const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<Date>(new Date());
   const [selectedTemplate, setSelectedTemplate] = useState<ShiftTemplate | null>(null);
   const [assignments, setAssignments] = useState<ShiftAssignments>({});
@@ -58,6 +60,10 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
   const [isClopeningConfirmOpen, setIsClopeningConfirmOpen] = useState(false);
   const [pendingAssignment, setPendingAssignment] = useState<PendingAssignment | null>(null);
   const [confirmModalState, setConfirmModalState] = useState<ConfirmModalState | null>(null);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [selectedShiftForDetail, setSelectedShiftForDetail] = useState<Shift | null>(null);
+  const [isOfferModalOpen, setIsOfferModalOpen] = useState(false);
+  const [shiftToOffer, setShiftToOffer] = useState<Shift | null>(null);
 
   useEffect(() => {
   const fetchMonthlyShifts = async () => {
@@ -127,7 +133,7 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
     if (initialTemplate && initialTemplate.length > 0 && employees.length > 0) {
       const firstDayOfTemplate = initialTemplate[0].start.toDate();
       const weekStartOfTemplate = startOfWeek(firstDayOfTemplate, { weekStartsOn: 1 });
-      setCurrentDate(weekStartOfTemplate);
+      onDateChange(weekStartOfTemplate);
       setSelectedDay(firstDayOfTemplate);
       const newAssignments: ShiftAssignments = {};
       initialTemplate.forEach(shift => {
@@ -155,11 +161,11 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
           const endDate = parse(selectedTemplate.endTime, 'HH:mm', selectedDay);
           let newShift: Omit<Shift, 'id' | 'createdAt'>;
           if (assignmentId === PENDING_ASSIGNMENT_ID) {
-            newShift = { userId: '', userName: 'PENDIENTE', shiftTypeId: selectedTemplate.id, shiftTypeName: selectedTemplate.name, start: Timestamp.fromDate(startDate), end: Timestamp.fromDate(endDate), status: ShiftStatus.PENDIENTE, notes: `Asignado a ${role}` };
+            newShift = { userId: '', userName: 'PENDIENTE', shiftTypeId: selectedTemplate.id, shiftTypeName: selectedTemplate.name, start: Timestamp.fromDate(startDate), end: Timestamp.fromDate(endDate), status: ShiftStatus.PENDIENTE, notes: `Asignado a ${role}`, role: role as UserRole };
           } else {
             const employee = employees.find(e => e.id === assignmentId);
             if (!employee) continue;
-            newShift = { userId: employee.id, userName: employee.name, shiftTypeId: selectedTemplate.id, shiftTypeName: selectedTemplate.name, start: Timestamp.fromDate(startDate), end: Timestamp.fromDate(endDate), status: ShiftStatus.CONFIRMADO, notes: `Asignado a ${role}` };
+            newShift = { userId: employee.id, userName: employee.name, shiftTypeId: selectedTemplate.id, shiftTypeName: selectedTemplate.name, start: Timestamp.fromDate(startDate), end: Timestamp.fromDate(endDate), status: ShiftStatus.CONFIRMADO, notes: `Asignado a ${role}`, role: role as UserRole };
           }
           shiftsToCreate.push(newShift);
         }
@@ -189,25 +195,45 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
     }
   };
 
-  const handleMarkAbsence = (shiftId: string, employeeName: string) => {
-    setConfirmModalState({
-      isOpen: true,
-      title: "Confirmar Falta",
-      message: `¿Estás seguro de que quieres marcar una FALTA INJUSTIFICADA para ${employeeName} en este turno?`,
-      confirmText: 'Sí, Marcar Falta',
-      confirmVariant: 'danger',
-      onConfirm: async () => {
-        if (!userData) return;
-        try {
-          await updateShift(shiftId, { status: ShiftStatus.FALTA_INJUSTIFICADA });
-          await logUserAction(userData.id, userData.name, HISTORY_ACTIONS.MARK_ABSENCE, { shiftId, employeeName });
-          addNotification(`Falta registrada para ${employeeName}.`, 'success');
-          const updatedDayShifts = await getShiftsForDay(selectedDay);
-          setShiftsForDay(updatedDayShifts);
-        } catch (error: any) { addNotification(`Error al registrar la falta: ${error.message}`, 'error'); }
+  const handleToggleAbsence = (shiftToUpdate: Shift) => {
+  // Determinamos la acción y el mensaje basados en el estado actual del turno
+  const isMarkingAbsence = shiftToUpdate.status === ShiftStatus.CONFIRMADO;
+  
+  const title = isMarkingAbsence ? "Confirmar Falta" : "Confirmar Eliminación de Falta";
+  const message = isMarkingAbsence 
+    ? `¿Estás seguro de que quieres marcar una FALTA INJUSTIFICADA para ${shiftToUpdate.userName}?`
+    : `¿Estás seguro de que quieres QUITAR la falta injustificada para ${shiftToUpdate.userName}? El turno volverá a su estado normal.`;
+  const confirmText = isMarkingAbsence ? 'Sí, Marcar Falta' : 'Sí, Quitar Falta';
+  const confirmVariant = isMarkingAbsence ? 'danger' : 'success';
+  const newStatus = isMarkingAbsence ? ShiftStatus.FALTA_INJUSTIFICADA : ShiftStatus.CONFIRMADO;
+
+  // Usamos el modal de confirmación que ya tienes
+  setConfirmModalState({
+    isOpen: true,
+    title: title,
+    message: message,
+    confirmText: confirmText,
+    confirmVariant: confirmVariant,
+    onConfirm: async () => {
+      if (!userData) return;
+      try {
+        await updateShift(shiftToUpdate.id, { status: newStatus });
+        await logUserAction(
+          userData.id, 
+          userData.name, 
+          isMarkingAbsence ? HISTORY_ACTIONS.MARK_ABSENCE : HISTORY_ACTIONS.REMOVE_ABSENCE, // Asumiendo que tienes esta nueva acción
+          { shiftId: shiftToUpdate.id, employeeName: shiftToUpdate.userName }
+        );
+        addNotification(`Acción completada para ${shiftToUpdate.userName}.`, 'success');
+        // Forzamos la recarga de los datos para ver el cambio visual al instante
+        const updatedDayShifts = await getShiftsForDay(selectedDay);
+        setShiftsForDay(updatedDayShifts);
+      } catch (error: any) { 
+        addNotification(`Error al actualizar el turno: ${error.message}`, 'error'); 
       }
-    });
-  };
+    }
+  });
+};
 
   const executeAssignment = (userId: string, role: string) => { if (!selectedTemplate) return; const requiredCount = selectedTemplate.positionsRequired[role]; const currentCount = assignments[role]?.length || 0; if (currentCount >= requiredCount) { addNotification(`El puesto de ${role.replace(/_/g, ' ')} ya está completo.`, 'warning'); return; } setAssignments(prev => ({ ...prev, [role]: [...(prev[role] || []), userId] })); };
   
@@ -242,8 +268,39 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
     }
   };
 
-  const navigateDate = (direction: 'prev' | 'next') => { const newDate = viewMode === 'week' ? addDays(currentDate, direction === 'prev' ? -7 : 7) : subMonths(currentDate, 1); setCurrentDate(newDate); };
-  const handleDaySelect = (day: Date) => { setSelectedDay(day); if (viewMode === 'month') { setViewMode('week'); setCurrentDate(day); } };
+  const handleOpenShiftDetails = (shift: Shift) => {
+  setSelectedShiftForDetail(shift);
+  setIsDetailModalOpen(true);
+};
+
+const handleOpenOfferModal = (shift: Shift) => {
+  // Cerramos el modal de detalles y abrimos el de confirmación
+  setIsDetailModalOpen(false);
+  // Un pequeño delay para que la transición sea suave
+  setTimeout(() => {
+    setShiftToOffer(shift);
+    setIsOfferModalOpen(true);
+  }, 150);
+};
+
+const executeOfferShift = async () => {
+  if (!shiftToOffer || !userData) return;
+  setIsOfferModalOpen(false);
+  try {
+    // Estas funciones deben existir en tu firestoreService
+    await offerShiftToManagers(shiftToOffer, userData.id, userData.name);
+    await updateShift(shiftToOffer.id, { status: ShiftStatus.CAMBIO_OFRECIDO_GERENTE });
+    addNotification("Tu turno ha sido ofrecido a los demás gerentes.", "success");
+    // Volvemos a cargar los datos para reflejar el cambio de estado
+    const updatedDayShifts = await getShiftsForDay(selectedDay);
+    setShiftsForDay(updatedDayShifts);
+  } catch (error: any) {
+    addNotification(`Error al ofrecer el turno: ${error.message}`, 'error');
+  }
+};
+
+  const navigateDate = (direction: 'prev' | 'next') => { const newDate = viewMode === 'week' ? addDays(currentDate, direction === 'prev' ? -7 : 7) : subMonths(currentDate, 1); onDateChange(newDate); };
+  const handleDaySelect = (day: Date) => { setSelectedDay(day); if (viewMode === 'month') { setViewMode('week'); onDateChange(day); } };
   const handleTemplateSelect = (template: ShiftTemplate) => {
     setSelectedTemplate(template);
     const newAssignments: ShiftAssignments = {};
@@ -312,15 +369,39 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
                           <Button onClick={() => handleOpenAssignModal(role)} disabled={isFulfilled || isShiftInPast} variant={isFulfilled ? 'success' : 'primary'}>{isFulfilled ? 'Completo' : 'Asignar'}</Button>
                         </div>
                         <div className="pl-2 border-l-2 border-gray-200 space-y-1 mt-2">{assignedForRole.map((assignmentId, index) => {
-                          if (assignmentId === PENDING_ASSIGNMENT_ID) { return ( <div key={`${assignmentId}-${index}`} className="flex items-center justify-between text-sm"><span className="italic text-yellow-600">Puesto Pendiente</span><button onClick={() => handleUnassign(role, index)} disabled={isShiftInPast} className="text-red-500 hover:text-red-700 text-xs px-2 disabled:text-gray-300 disabled:cursor-not-allowed"><i className="fas fa-times-circle"></i></button></div> ); }
+                          if (assignmentId === PENDING_ASSIGNMENT_ID) { return ( <div 
+  key={`${assignmentId}-${index}`} 
+  onClick={() => shift && onShiftClick?.(shift)}
+  className="flex items-center justify-between text-sm p-1 -m-1 rounded-md hover:bg-gray-200 cursor-pointer"
+><span className="italic text-yellow-600">Puesto Pendiente</span><button onClick={() => handleUnassign(role, index)} disabled={isShiftInPast} className="text-red-500 hover:text-red-700 text-xs px-2 disabled:text-gray-300 disabled:cursor-not-allowed"><i className="fas fa-times-circle"></i></button></div> ); }
                           const employee = employees.find(e => e.id === assignmentId);
                           const shift = shiftsForDay.find(s => s.userId === assignmentId && s.shiftTypeId === selectedTemplate.id);
                           let statusStyle = 'text-amore-charcoal';
                           if (shift?.status === ShiftStatus.FALTA_INJUSTIFICADA) { statusStyle = 'text-red-500 line-through'; } else if (shift?.status === ShiftStatus.JUSTIFICACION_PENDIENTE) { statusStyle = 'text-yellow-600 italic'; } else if (shift?.status === ShiftStatus.AUSENCIA_JUSTIFICADA) { statusStyle = 'text-green-600'; }
                           return (
-                            <div key={`${assignmentId}-${index}`} className="flex items-center justify-between text-sm">
+                            <div 
+  key={`${assignmentId}-${index}`} 
+  onClick={() => shift && onShiftClick?.(shift)}
+  className="flex items-center justify-between text-sm p-1 -m-1 rounded-md hover:bg-gray-200 cursor-pointer"
+>
                               <span className={statusStyle}>{employee?.name || 'Empleado Desconocido'}{shift?.status === ShiftStatus.JUSTIFICACION_PENDIENTE && <span className="text-xs ml-2">(Justificación Pendiente)</span>}{shift?.status === ShiftStatus.AUSENCIA_JUSTIFICADA && <span className="text-xs ml-2 font-semibold">(Falta Justificada)</span>}</span>
-                              {(isShiftInPast && shift?.status === ShiftStatus.CONFIRMADO) ? (<Button onClick={() => handleMarkAbsence(shift!.id, employee!.name)} size="xs" variant="danger" className="ml-2">Marcar Falta</Button>) : (<button onClick={() => handleUnassign(role, index)} disabled={isShiftInPast} className="text-red-500 hover:text-red-700 text-xs px-2 disabled:text-gray-300 disabled:cursor-not-allowed"><i className="fas fa-times-circle"></i></button>)}
+                              {/* --- BOTÓN INTELIGENTE DE FALTA/ASISTENCIA --- */}
+{(isShiftInPast && (shift?.status === ShiftStatus.CONFIRMADO || shift?.status === ShiftStatus.FALTA_INJUSTIFICADA)) ? (
+  <Button 
+    onClick={() => handleToggleAbsence(shift!)}
+    size="xs"
+    // El color y el texto del botón cambian según el estado actual
+    variant={shift.status === ShiftStatus.FALTA_INJUSTIFICADA ? 'success' : 'danger'}
+    className="ml-2"
+  >
+    {shift.status === ShiftStatus.FALTA_INJUSTIFICADA ? 'Quitar Falta' : 'Marcar Falta'}
+  </Button>
+) : (
+  // El botón para desasignar un turno futuro no cambia
+  <button onClick={(e) => { e.stopPropagation(); handleUnassign(role, index); }} disabled={isShiftInPast} className="...">
+    <i className="fas fa-times-circle"></i>
+  </button>
+)}
                             </div>
                           );
                         })}</div>
@@ -334,7 +415,7 @@ const ScheduleBuilder: React.FC<ScheduleBuilderProps> = ({ initialTemplate, onTe
           )}
         </>
       )}
-      {viewMode === 'month' && (<MonthView currentDate={currentDate} shifts={monthlyShifts} templates={shiftTemplates} onShiftClick={handleDaySelect} />)}
+      {viewMode === 'month' && (<MonthView currentDate={currentDate} shifts={monthlyShifts} templates={shiftTemplates} onDayClick={handleDaySelect} />)}
       {isAssignModalOpen && roleToAssign && (<Modal isOpen={isAssignModalOpen} onClose={() => setIsAssignModalOpen(false)} title={`Asignar Empleado para: ${roleToAssign.replace(/_/g, ' ')}`} size="lg">{<div className="flex flex-col space-y-2"><Button onClick={handleMarkAsPending} variant='warning' icon={<i className="fas fa-clock mr-2"></i>}>Marcar como Pendiente</Button><hr className="my-2"/>{assignableEmployees.length > 0 ? (<div className="space-y-3 max-h-96 overflow-y-auto p-1">{assignableEmployees.map(emp => { const shiftCountForWeek = shiftsForWeek.filter(shift => String(shift.userId).trim() === String(emp.id).trim()).length; let countText = ''; let badgeClasses = ''; if (shiftCountForWeek === 0) { countText = 'Sin turnos esta semana'; badgeClasses = 'bg-gray-200 text-gray-700'; } else if (shiftCountForWeek === 1) { countText = 'Asignado a 1 turno'; badgeClasses = 'bg-[#1F2937] text-white'; } else { countText = `Asignado a ${shiftCountForWeek} turnos`; badgeClasses = 'bg-[#B91C1C] text-white'; } return ( <div key={emp.id} className="p-3 bg-gray-50 rounded-lg border border-gray-200"><div className="flex justify-between items-center"><div className="flex items-center gap-2 flex-wrap"><p className="font-bold text-amore-charcoal">{emp.name}</p><span className={`text-xs font-semibold px-2 py-1 rounded-full ${badgeClasses}`}>{countText}</span></div><Button onClick={() => handleAssignEmployee(emp.id)} size="sm" variant="success">Asignar</Button></div>{(emp.schedulePreferences || emp.availabilityNotes) && (<div className="mt-2 text-xs space-y-1 border-t pt-2">{emp.schedulePreferences && (<p className="text-blue-600"><i className="fas fa-star mr-1 opacity-70"></i> <strong>Prefiere:</strong> {emp.schedulePreferences}</p>)}{emp.availabilityNotes && (<p className="text-green-600"><i className="fas fa-check-circle mr-1 opacity-70"></i> <strong>Disponible:</strong> {emp.availabilityNotes}</p>)}</div>)}</div>); })}</div>) : (<p className="text-center text-amore-gray p-4">No hay más empleados disponibles.</p>)}</div>}</Modal>)}
       {isClopeningConfirmOpen && pendingAssignment && (<Modal isOpen={isClopeningConfirmOpen} onClose={() => setIsClopeningConfirmOpen(false)} title="⚠️ Advertencia de Turnos Consecutivos" size="md" footer={<div className="flex justify-end gap-2"><Button variant="light" onClick={() => setIsClopeningConfirmOpen(false)}>Cancelar</Button><Button variant="warning" onClick={() => { if (pendingAssignment) { executeAssignment(pendingAssignment.userId, pendingAssignment.role); } setIsClopeningConfirmOpen(false); setPendingAssignment(null); }}>Asignar de Todos Modos</Button></div>}><p className="text-amore-gray">Este empleado trabajó en el turno vespertino del día anterior. ¿Estás seguro?</p></Modal>)}
       {confirmModalState?.isOpen && (<Modal isOpen={confirmModalState.isOpen} onClose={() => setConfirmModalState(null)} title={confirmModalState.title} size="md" footer={<div className="flex justify-end gap-2"><Button variant="light" onClick={() => setConfirmModalState(null)}>Cancelar</Button><Button variant={confirmModalState.confirmVariant} isLoading={isPublishing} onClick={() => { confirmModalState.onConfirm(); setConfirmModalState(null); }}>{confirmModalState.confirmText}</Button></div>}><p className="text-amore-gray">{confirmModalState.message}</p></Modal>)}
